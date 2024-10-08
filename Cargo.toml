@@ -1,0 +1,11 @@
+[package]
+name = "rds-vpn"
+version = "0.1.0"
+edition = "2021"
+authors = ["相田 優希 <51500566+aida0710@users.noreply.github.com>"]
+
+[dependencies]
+pcap = { version = "2.2.0" }
+pnet = { version = "0.35.0" }
+rand = { version = "0.8.5" }
+base64 = { version = "0.22.1" }
