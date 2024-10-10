@@ -4,8 +4,19 @@ use std::cell::OnceCell;
 
 pub static DATABASE: OnceCell<Database> = OnceCell::new();
 
-pub async fn connect(connection_string: &str) -> Result<(), DbError> {
-    let db = Database::new(connection_string).await?;
+pub async fn connect(
+    host: &str,
+    port: u16,
+    user: &str,
+    password: &str,
+    database: &str,
+) -> Result<(), DbError> {
+    let db = Database::new(
+        &format!(
+            "postgres://{}:{}@{}:{}/{}",
+            user, password, host, port, database
+        ),
+    );
     DATABASE.set(db).map_err(|_| DbError::Initialization)?;
     DATABASE.get().unwrap().connect().await?;
     Ok(())
