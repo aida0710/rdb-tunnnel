@@ -5,7 +5,17 @@ edition = "2021"
 authors = ["相田 優希 <51500566+aida0710@users.noreply.github.com>"]
 
 [dependencies]
-pcap = { version = "2.2.0" }
-pnet = { version = "0.35.0" }
-rand = { version = "0.8.5" }
-base64 = { version = "0.22.1" }
+dotenv = { version = "0.15" } # .envファイルを読み込む
+pcap = { version = "2.2" } # パケットキャプチャ
+pnet = { version = "0.35" } # パケットキャプチャ/送信
+rand = { version = "0.8" } # 乱数生成
+base64 = { version = "0.22" } # Base64エンコード/デコード
+chrono = { version = "0.4" } # 時間を扱うライブラリ
+tokio = { version = "1.16", features = ["full"] } # 非同期処理
+tokio-postgres = { version = "0.7" } # 非同期のPostgreSQLクライアント
+bb8 = { version = "0.8" } # データベースのコネクションプール
+bb8-postgres = { version = "0.8" } # PostgreSQLに統合されたコネクションプール
+serde = { version = "1.0", features = ["derive"] } # シリアライズ/デシリアライズ フレームワーク
+serde_json = { version = "1.0" } # JSONのシリアライズ/デシリアライズ
+async-trait = { version = "0.1" } # 非同期トレイト
+thiserror = { version = "1.0" } # カスタムエラー型を簡単に定義
