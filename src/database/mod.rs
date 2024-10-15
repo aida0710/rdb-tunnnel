@@ -1,6 +1,6 @@
 mod database;
 mod error;
 mod connector;
-mod excute_query;
+mod execute_query;
 
 pub use connector::connect;

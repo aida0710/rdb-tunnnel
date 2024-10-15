@@ -1,8 +1,5 @@
-use crate::database::database::Database;
+use crate::database::database::{Database, DATABASE};
 use crate::database::error::DbError;
-use std::cell::OnceCell;
-
-pub static DATABASE: OnceCell<Database> = OnceCell::new();
 
 pub async fn connect(
     host: &str,
