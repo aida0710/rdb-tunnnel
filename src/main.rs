@@ -7,29 +7,36 @@ mod vpn;
 mod real_time_analytics;
 mod web_console;
 mod database;
+pub mod packet_analysis;
+mod error;
 
-use crate::host_ids::packet_analysis::packet_analysis;
-use std::error::Error;
 use crate::database::connect;
+use crate::error::InitProcessError;
+use packet_analysis::packet_analysis;
 
-fn main() -> Result<(), Box<dyn Error>> {
-    // .envファイルを読み込む
-    dotenv().expect(".envファイルの読み取りに失敗しました");
+#[tokio::main]
+async fn main() -> Result<(), InitProcessError> {
+    dotenv().map_err(|e| InitProcessError::EnvFileReadError(e.to_string()))?;
 
-    //let env = dotenv::var("ENV").expect("ENVの取得に失敗しました");
-    let timescale_host = dotenv::var("TIMESCALE_HOST").expect("TIMESCALE_HOSTの取得に失敗しました").as_str();
-    let timescale_port = dotenv::var("TIMESCALE_PORT").expect("TIMESCALE_PORTの取得に失敗しました").parse::<u16>().expect("TIMESCALE_PORTのパースに失敗しました");
-    let timescale_user = dotenv::var("TIMESCALE_USER").expect("TIMESCALE_USERの取得に失敗しました").as_str();
-    let timescale_password = dotenv::var("TIMESCALE_PASSWORD").expect("TIMESCALE_PASSWORDの取得に失敗しました").as_str();
-    let timescale_db = dotenv::var("TIMESCALE_DB").expect("TIMESCALE_DBの取得に失敗しました").as_str();
+    let timescale_host = dotenv::var("TIMESCALE_HOST").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.as_str();
+    let timescale_port = dotenv::var("TIMESCALE_PORT").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.parse::<u16>().map_err(|e| InitProcessError::EnvVarParseError(e.to_string()))?;
+    let timescale_user = dotenv::var("TIMESCALE_USER").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.as_str();
+    let timescale_password = dotenv::var("TIMESCALE_PASSWORD").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.as_str();
+    let timescale_db = dotenv::var("TIMESCALE_DB").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.as_str();
 
-    connect(timescale_host, timescale_port, timescale_user, timescale_password, timescale_db);
+    connect(timescale_host, timescale_port, timescale_user, timescale_password, timescale_db)
+        .await
+        .map_err(|e| InitProcessError::DatabaseConnectionError(e.to_string()))?;
 
-    let (cap, device): (Capture<Active>, Device) = select_device()?;
+    let (cap, device): (Capture<Active>, Device) = select_device()
+        .map_err(|e| InitProcessError::DeviceSelectionError(e.to_string()))?;
     println!("デバイスの選択に成功しました: {}", device.name);
 
+    // 非同期のパケット取得とnicに再注入
+
+    // パケットの解析とデータベースへの保存
     if let Err(e) = packet_analysis(cap) {
-        println!("パケットの解析に失敗しました: {}", e);
+        println!("パケットの解析に失敗しました: {}", InitProcessError::PacketAnalysisError(e.to_string()));
     }
 
     Ok(())
