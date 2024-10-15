@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
-use crate::packet_reassembly::ip_header::IpHeader;
+use crate::host_ids::ip_header::IpHeader;
 
 // フラグメントされたIPパケットを表す構造体
 #[derive(Clone)]
