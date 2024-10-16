@@ -18,11 +18,11 @@ use packet_analysis::packet_analysis;
 async fn main() -> Result<(), InitProcessError> {
     dotenv().map_err(|e| InitProcessError::EnvFileReadError(e.to_string()))?;
 
-    let timescale_host = dotenv::var("TIMESCALE_HOST").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.as_str();
+    let timescale_host = dotenv::var("TIMESCALE_HOST").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
+    let timescale_user = dotenv::var("TIMESCALE_USER").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
     let timescale_port = dotenv::var("TIMESCALE_PORT").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.parse::<u16>().map_err(|e| InitProcessError::EnvVarParseError(e.to_string()))?;
-    let timescale_user = dotenv::var("TIMESCALE_USER").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.as_str();
-    let timescale_password = dotenv::var("TIMESCALE_PASSWORD").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.as_str();
-    let timescale_db = dotenv::var("TIMESCALE_DB").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.as_str();
+    let timescale_password = dotenv::var("TIMESCALE_PASSWORD").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
+    let timescale_db = dotenv::var("TIMESCALE_DB").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
 
     // データベースへの接続
     Database::connect(&timescale_host, timescale_port, &timescale_user, &timescale_password, &timescale_db)
