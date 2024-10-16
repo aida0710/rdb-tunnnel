@@ -3,22 +3,22 @@ use crate::host_ids::ip_reassembly::IpReassembler;
 use crate::host_ids::tcp_header::{parse_tcp_header, parse_tcp_options};
 use crate::host_ids::tcp_stream::{TcpStream, TcpStreamKey, TCP_SYN};
 use chrono::{DateTime, Local};
+use pnet::packet::ip::IpNextHeaderProtocols;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-// パケットを処理
-pub fn process_packet<>(
-    packet: &pcap::Packet,
+pub fn process_packet(
+    ethernet_packet: &[u8],
     streams: &mut HashMap<TcpStreamKey, TcpStream>,
     ip_reassembler: &mut IpReassembler,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let arrival_time = SystemTime::now();
     let eth_header_size = 14; // Ethernetヘッダーのサイズ
-    if packet.data.len() <= eth_header_size {
+    if ethernet_packet.len() <= eth_header_size {
         return Ok(());
     }
 
-    let ip_data = &packet.data[eth_header_size..];
+    let ip_data = &ethernet_packet[eth_header_size..];
 
     if let Some((ip_header, ip_header_size)) = parse_ip_header(ip_data) {
         let payload = &ip_data[ip_header_size..];
@@ -53,8 +53,7 @@ fn process_reassembled_packet(
     streams: &mut HashMap<TcpStreamKey, TcpStream>,
     arrival_time: SystemTime,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if ip_header.protocol != 6 {
-        // TCPのプロトコル番号は6
+    if ip_header.protocol != IpNextHeaderProtocols::Tcp.0 {
         return Ok(());
     }
 
@@ -72,8 +71,7 @@ fn process_tcp_packet(
     streams: &mut HashMap<TcpStreamKey, TcpStream>,
     arrival_time: SystemTime,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if ip_header.protocol != 6 {
-        // TCPのプロトコル番号は6
+    if ip_header.protocol != IpNextHeaderProtocols::Tcp.0 {
         return Ok(());
     }
 
@@ -177,7 +175,6 @@ fn process_tcp_data(
             "Stream: {}:{} -> {}:{}",
             stream_key.0, tcp_header.src_port, stream_key.2, tcp_header.dst_port
         );
-
 
         // ストリームが閉じられた場合、ストリームを削除
         if stream.state == crate::host_ids::tcp_stream::TcpState::Closed {
