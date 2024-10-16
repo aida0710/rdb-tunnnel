@@ -44,11 +44,6 @@ pub fn process_packet<>(
         }
     }
 
-    // 100パケットごとにIP再構築のキャッシュをクリーンアップ
-    if packet.header.len % 100 == 0 {
-        ip_reassembler.cleanup();
-    }
-
     Ok(())
 }
 
