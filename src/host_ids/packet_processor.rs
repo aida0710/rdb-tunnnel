@@ -91,26 +91,6 @@ fn process_tcp_header_and_payload(
     streams: &mut HashMap<TcpStreamKey, TcpStream>,
     arrival_time: SystemTime,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    match process_tcp_data(
-        ip_header,
-        tcp_header,
-        payload,
-        streams,
-        arrival_time,
-    ) {
-        Ok(_) => (),
-        Err(e) => eprintln!("Error processing TCP data: {}", e),
-    }
-    Ok(())
-}
-
-fn process_tcp_data(
-    ip_header: &IpHeader,
-    tcp_header: &crate::host_ids::tcp_header::TcpHeader,
-    payload: &[u8],
-    streams: &mut HashMap<TcpStreamKey, TcpStream>,
-    arrival_time: SystemTime,
-) -> Result<(), Box<dyn std::error::Error>> {
     let stream_key = (
         ip_header.src_ip,
         tcp_header.src_port,
