@@ -6,7 +6,6 @@ authors = ["相田 優希 <51500566+aida0710@users.noreply.github.com>"]
 
 [dependencies]
 dotenv = { version = "0.15" } # .envファイルを読み込む
-pcap = { version = "2.2" } # パケットキャプチャ
 pnet = { version = "0.35" } # パケットキャプチャ/送信
 rand = { version = "0.8" } # 乱数生成
 base64 = { version = "0.22" } # Base64エンコード/デコード
