@@ -1,10 +1,10 @@
+use crate::database::database::Database;
 use crate::database::error::DbError;
 use async_trait::async_trait;
-use crate::database::database::Database;
 
 #[async_trait]
 pub trait ExecuteQuery {
-    async fn execute(&self, query: &str, params: Vec<str>) -> Result<u64, DbError>;
+    async fn execute(&self, query: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<u64, DbError>;
 }
 
 #[async_trait]
