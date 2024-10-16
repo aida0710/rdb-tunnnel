@@ -6,4 +6,4 @@ mod tcp_stream;
 
 pub use ip_reassembly::IpReassembler;
 pub use packet_processor::process_packet;
-pub use tcp_stream::{TcpState, TcpStream, TcpStreamKey};
+pub use tcp_stream::TcpState;
