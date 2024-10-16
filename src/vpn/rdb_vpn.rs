@@ -1,24 +1,33 @@
-use pcap::Packet;
 use crate::vpn::firewall::{Filter, IpFirewall, Policy};
+use crate::vpn::firewall_packet::FirewallPacket;
 use crate::vpn::packet_header::{parse_ip_header, parse_next_ip_header};
+use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use std::net::IpAddr;
 
-pub enum Protocol {
-    Tcp = 6,
-    Udp = 17,
-}
-
-pub fn rdb_vpn(mut packet: Packet) {
-
+pub fn rdb_vpn(ethernet_packet: &[u8]) {
     // packetの簡単な解析
     let mut src_port: u16 = 0;
     let mut dst_port: u16 = 0;
 
-    let ip_header = parse_ip_header(&mut packet);
-    if ip_header.protocol == Protocol::Tcp as u8 || ip_header.protocol == Protocol::Udp as u8 {
-        let next_ip_header = parse_next_ip_header(&mut packet);
-        src_port = next_ip_header.source_port;
-        dst_port = next_ip_header.destination_port;
-    }
+    if let Some(ip_header) = parse_ip_header(&ethernet_packet) {
+        let protocol = IpNextHeaderProtocol(ip_header.protocol);
+
+        if protocol == IpNextHeaderProtocols::Tcp || protocol == IpNextHeaderProtocols::Udp {
+            let payload_offset = match ip_header.version {
+                4 => 20, // IPv4ヘッダーの最小サイズ
+                6 => 40, // IPv6ヘッダーの固定サイズ
+                _ => return, // 未知のIPバージョン
+            };
+
+            if ethernet_packet.len() > payload_offset {
+                let next_ip_header = parse_next_ip_header(&ethernet_packet[payload_offset..]);
+                src_port = next_ip_header.source_port;
+                dst_port = next_ip_header.destination_port;
+            } else {
+                // lengthが足りない場合は終了
+                return;
+            }
+        }
 
         // firewallの実行
         let mut firewall = IpFirewall::new(Policy::Blacklist);
@@ -28,7 +37,12 @@ pub fn rdb_vpn(mut packet: Packet) {
 
         println!("Blacklist - Packet allowed: {}", firewall.check(FirewallPacket::new(ip_header.src_ip, ip_header.dst_ip, src_port, dst_port, ip_header.version, protocol)));
 
-    // dbにデータを書き込み
+        // dbにデータを書き込み
+
+        // ここにデータベースへの書き込みコードを追加
+    } else {
+        println!("IPヘッダーのパースに失敗しました");
+    }
 
     //終了
 }
