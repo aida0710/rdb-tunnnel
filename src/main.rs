@@ -1,6 +1,6 @@
 use crate::select_device::select_device;
 use dotenv::dotenv;
-use pcap::{Active, Capture, Device};
+
 mod select_device;
 mod host_ids;
 mod vpn;
@@ -10,7 +10,7 @@ mod database;
 pub mod packet_analysis;
 mod error;
 
-use crate::database::connect;
+use crate::database::database::Database;
 use crate::error::InitProcessError;
 use packet_analysis::packet_analysis;
 
@@ -24,7 +24,8 @@ async fn main() -> Result<(), InitProcessError> {
     let timescale_password = dotenv::var("TIMESCALE_PASSWORD").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.as_str();
     let timescale_db = dotenv::var("TIMESCALE_DB").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.as_str();
 
-    connect(timescale_host, timescale_port, timescale_user, timescale_password, timescale_db)
+    // データベースへの接続
+    Database::connect(&timescale_host, timescale_port, &timescale_user, &timescale_password, &timescale_db)
         .await
         .map_err(|e| InitProcessError::DatabaseConnectionError(e.to_string()))?;
 
