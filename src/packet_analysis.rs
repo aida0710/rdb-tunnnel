@@ -1,21 +1,32 @@
-use pcap::{Active, Capture};
-use std::collections::HashMap;
+use crate::host_ids::{process_packet, IpReassembler, TcpState};
+use crate::vpn::rdb_vpn;
+use pnet::datalink::Channel::Ethernet;
+use pnet::datalink::{self, NetworkInterface};
 use std::time::Duration;
-use crate::host_ids::{process_packet, IpReassembler, TcpStream, TcpStreamKey};
-use crate::host_ids::TcpState;
 
-pub fn packet_analysis(mut cap: Capture<Active>) -> Result<(), Box<dyn std::error::Error>> {
-    let mut streams: HashMap<TcpStreamKey, TcpStream> = HashMap::new();
-    let mut ip_reassembler: IpReassembler = IpReassembler::new(Duration::from_secs(30));
+pub fn packet_analysis(interface: NetworkInterface) -> Result<(), Box<dyn std::error::Error>> {
+    let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
+        Ok(Ethernet(tx, rx)) => (tx, rx),
+        Ok(_) => return Err("未対応のチャンネルタイプです".into()),
+        Err(e) => return Err(e.into()),
+    };
 
-    while let Ok(packet) = cap.next_packet() {
-        // VPN処理
+    let mut streams = std::collections::HashMap::new();
+    let mut ip_reassembler = IpReassembler::new(Duration::from_secs(30));
 
+    loop {
+        match rx.next() {
+            Ok(packet) => {
+                // rds-vpn
+                match rdb_vpn::rdb_vpn(&packet) { _ => {} }
 
-        // IDS処理
-        match process_packet(&packet, &mut streams, &mut ip_reassembler) {
-            Ok(_) => (),
-            Err(e) => eprintln!("パケット処理中にエラーが発生しました: {}", e),
+                // イーサネットフレームの解析
+                match process_packet(&packet, &mut streams, &mut ip_reassembler) {
+                    Ok(_) => (),
+                    Err(e) => eprintln!("パケット処理中にエラーが発生しました: {}", e),
+                }
+            }
+            Err(e) => eprintln!("パケットの読み取り中にエラーが発生しました: {}", e),
         }
 
         // 古いストリームの削除
@@ -23,6 +34,4 @@ pub fn packet_analysis(mut cap: Capture<Active>) -> Result<(), Box<dyn std::erro
             stream.last_activity.elapsed() < Duration::from_secs(300) || stream.state != TcpState::Closed
         });
     }
-
-    Ok(())
 }
