@@ -1,10 +1,10 @@
 use crate::database::error::DbError;
 use bb8::Pool;
 use bb8_postgres::PostgresConnectionManager;
-use std::cell::OnceCell;
+use std::sync::OnceLock;
 use tokio_postgres::NoTls;
 
-pub static DATABASE: OnceCell<Database> = OnceCell::new();
+pub static DATABASE: OnceLock<Database> = OnceLock::new();
 
 pub(crate) struct Database {
     pub pool: Pool<PostgresConnectionManager<NoTls>>,
