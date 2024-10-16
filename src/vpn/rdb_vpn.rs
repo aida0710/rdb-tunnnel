@@ -20,13 +20,13 @@ pub fn rdb_vpn(mut packet: Packet) {
         dst_port = next_ip_header.destination_port;
     }
 
-    // firewallの実行
-    let mut firewall = IpFirewall::new(Policy::Blacklist);
+        // firewallの実行
+        let mut firewall = IpFirewall::new(Policy::Blacklist);
 
-    firewall.add_rule(Filter::IpAddress("192.168.1.100".parse().unwrap()), 100);
-    firewall.add_rule(Filter::Port(8080), 90);
+        firewall.add_rule(Filter::IpAddress(IpAddr::V4("192.168.1.100".parse().unwrap())), 100);
+        firewall.add_rule(Filter::Port(8080), 90);
 
-    println!("Blacklist - Packet 1 allowed: {}", firewall.check(ip_header, src_port, dst_port));
+        println!("Blacklist - Packet allowed: {}", firewall.check(FirewallPacket::new(ip_header.src_ip, ip_header.dst_ip, src_port, dst_port, ip_header.version, protocol)));
 
     // dbにデータを書き込み
 

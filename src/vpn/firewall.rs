@@ -1,4 +1,4 @@
-use crate::vpn::packet_header::IpHeader;
+use crate::vpn::firewall_packet::FirewallPacket;
 use pnet::packet::ip::IpNextHeaderProtocol;
 use std::net::IpAddr;
 
@@ -42,10 +42,10 @@ impl IpFirewall {
         self.rules.sort_by_key(|rule| std::cmp::Reverse(rule.priority));
     }
 
-    pub fn check(&self, ip_header: IpHeader, src_port: u16, dst_port: u16) -> bool {
+    pub fn check(&self, firewall_packet: FirewallPacket) -> bool {
         let rule_match = self.rules
             .iter()
-            .any(|rule| self.matches(&rule.filter, ip_header, src_port, dst_port));
+            .any(|rule| self.matches(&rule.filter, firewall_packet));
 
         match (rule_match, self.policy) {
             (true, Policy::Whitelist) => true,   // ルールに一致し、ホワイトリストなら許可
@@ -55,15 +55,15 @@ impl IpFirewall {
         }
     }
 
-    fn matches(&self, filter: &Filter, ip_header: IpHeader, src_port: u16, dst_port: u16) -> bool {
+    fn matches(&self, filter: &Filter, firewall_packet: FirewallPacket) -> bool {
         match filter {
-            Filter::IpAddress(addr) => *addr == ip_header.src_ip || *addr == ip_header.dst_ip,
-            Filter::Port(p) => *p == src_port || *p == dst_port,
-            Filter::IpVersion(v) => *v == ip_header.version,
-            Filter::NextHeaderProtocol(p) => *p == IpNextHeaderProtocol(ip_header.protocol),
-            Filter::And(f1, f2) => self.matches(f1, ip_header, src_port, dst_port) && self.matches(f2, ip_header, src_port, dst_port),
-            Filter::Or(f1, f2) => self.matches(f1, ip_header, src_port, dst_port) || self.matches(f2, ip_header, src_port, dst_port),
-            Filter::Not(f) => !self.matches(f, ip_header, src_port, dst_port),
+            Filter::IpAddress(addr) => *addr == firewall_packet.src_ip || *addr == firewall_packet.dst_ip,
+            Filter::Port(p) => *p == firewall_packet.src_port || *p == firewall_packet.dst_port,
+            Filter::IpVersion(v) => *v == firewall_packet.ip_version,
+            Filter::NextHeaderProtocol(p) => *p == firewall_packet.next_header_protocol,
+            Filter::And(f1, f2) => self.matches(f1, firewall_packet) && self.matches(f2, firewall_packet),
+            Filter::Or(f1, f2) => self.matches(f1, firewall_packet) || self.matches(f2, firewall_packet),
+            Filter::Not(f) => !self.matches(f, firewall_packet),
         }
     }
 }
