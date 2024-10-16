@@ -1,4 +1,5 @@
 use pcap::Packet;
+use crate::vpn::firewall::{Filter, IpFirewall, Policy};
 use crate::vpn::packet_header::{parse_ip_header, parse_next_ip_header};
 
 pub enum Protocol {
@@ -8,10 +9,7 @@ pub enum Protocol {
 
 pub fn rdb_vpn(mut packet: Packet) {
 
-    // ip headerの解析
-
-    // tcp headerとudp headerの解析
-
+    // packetの簡単な解析
     let mut src_port: u16 = 0;
     let mut dst_port: u16 = 0;
 
@@ -23,8 +21,12 @@ pub fn rdb_vpn(mut packet: Packet) {
     }
 
     // firewallの実行
+    let mut firewall = IpFirewall::new(Policy::Blacklist);
 
+    firewall.add_rule(Filter::IpAddress("192.168.1.100".parse().unwrap()), 100);
+    firewall.add_rule(Filter::Port(8080), 90);
 
+    println!("Blacklist - Packet 1 allowed: {}", firewall.check(ip_header, src_port, dst_port));
 
     // dbにデータを書き込み
 

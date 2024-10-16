@@ -1,5 +1,6 @@
 use std::net::Ipv4Addr;
 
+#[derive(Clone, Copy)]
 pub struct IpHeader {
     pub version: u8,
     pub protocol: u8,

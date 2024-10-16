@@ -1,7 +1,7 @@
 # rds-vpn todo list
 
 ### rds-vpn
-- [ ] パケットのipヘッダー解析
+- [x] パケットのipヘッダー解析
 - [ ] データベースに全てのパケットを保存
   - [ ] src_ip
   - [ ] dst_ip
