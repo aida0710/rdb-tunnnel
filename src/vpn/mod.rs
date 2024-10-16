@@ -2,8 +2,6 @@ mod firewall;
 mod packet_header;
 mod firewall_packet;
 mod inset_db;
-mod rdb_vpn;
-mod tcp_header;
-mod udp_header;
+pub mod rdb_vpn;
 
-use rdb_vpn::rdb_vpn;
+pub use rdb_vpn::rdb_vpn;
