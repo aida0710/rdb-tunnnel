@@ -29,14 +29,15 @@ async fn main() -> Result<(), InitProcessError> {
         .await
         .map_err(|e| InitProcessError::DatabaseConnectionError(e.to_string()))?;
 
-    let (cap, device): (Capture<Active>, Device) = select_device()
+    // デバイスの選択
+    let interface = select_device()
         .map_err(|e| InitProcessError::DeviceSelectionError(e.to_string()))?;
-    println!("デバイスの選択に成功しました: {}", device.name);
+    println!("デバイスの選択に成功しました: {}", interface.name);
 
     // 非同期のパケット取得とnicに再注入
 
     // パケットの解析とデータベースへの保存
-    if let Err(e) = packet_analysis(cap) {
+    if let Err(e) = packet_analysis(interface) {
         println!("パケットの解析に失敗しました: {}", InitProcessError::PacketAnalysisError(e.to_string()));
     }
 
