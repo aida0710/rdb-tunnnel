@@ -105,7 +105,7 @@ impl TcpStream {
             (TcpState::SynSent, flags) if flags & (TCP_SYN | TCP_ACK) == (TCP_SYN | TCP_ACK) => {
                 // 実際はSYN-ACK を受信したら ACK を送信するが、傍聴しているだけなので不要
                 TcpState::Established
-            },
+            }
 
             // サーバーが最後の ACK を受信し、接続確立
             (TcpState::SynReceived, TCP_ACK) => TcpState::Established,
@@ -126,7 +126,7 @@ impl TcpStream {
                     // その他の場合は状態を変更しない
                     TcpState::FinWait1
                 }
-            },
+            }
 
             // 最後の FIN に対する ACK を受信、接続終了の準備
             (TcpState::FinWait2, TCP_ACK) => TcpState::TimeWait,
