@@ -18,7 +18,7 @@ pub fn packet_analysis(interface: NetworkInterface) -> Result<(), Box<dyn std::e
         match rx.next() {
             Ok(packet) => {
                 // rds-vpn
-                match rdb_vpn::rdb_vpn(&packet) { _ => {} }
+                // match rdb_vpn::rdb_vpn(&packet) { _ => {} }
 
                 // イーサネットフレームの解析
                 match process_packet(&packet, &mut streams, &mut ip_reassembler) {

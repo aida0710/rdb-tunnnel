@@ -20,12 +20,16 @@ pub fn process_packet(
 
     let ip_data = &ethernet_packet[eth_header_size..];
 
+    // println!("IP Data: {:?}", ip_data);
+
     if let Some((ip_header, ip_header_size)) = parse_ip_header(ip_data) {
         let payload = &ip_data[ip_header_size..];
 
         // IPの再構築を試みる
         if let Some(reassembled_packet) = ip_reassembler.process_packet(&ip_header, payload) {
             // 再構築されたパケットを処理
+
+            // println!("ip header: {:?}", ip_header.src_ip);
             match process_reassembled_packet(
                 &ip_header,
                 &reassembled_packet,
@@ -103,6 +107,9 @@ fn process_tcp_header_and_payload(
         ip_header.src_ip,
         tcp_header.src_port,
     );
+
+    // println!("Stream Key: {:?}", stream_key);
+    // println!("Reverse Key: {:?}", reverse_key);
 
     // クライアントからのパケットかどうかを判断
     let is_from_client = if streams.contains_key(&stream_key) {
