@@ -2,7 +2,7 @@ use crate::host_idps::{process_packet, IpReassembler, TcpState};
 use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{self, NetworkInterface};
 use std::time::Duration;
-use crate::application_tunnel::rdb_tunnel;
+use crate::rdb_tunnel::rdb_tunnel;
 
 pub fn packet_analysis(interface: NetworkInterface) -> Result<(), Box<dyn std::error::Error>> {
     let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
@@ -17,7 +17,7 @@ pub fn packet_analysis(interface: NetworkInterface) -> Result<(), Box<dyn std::e
     loop {
         match rx.next() {
             Ok(packet) => {
-                // rdb-application_tunnel
+                // rdb_tunnel
                 match rdb_tunnel::rdb_tunnel(&packet) { _ => {} }
 
                 // イーサネットフレームの解析

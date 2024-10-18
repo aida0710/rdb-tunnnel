@@ -1,7 +1,7 @@
-# RDB VPN Client
+# RDB Tunnel Client
 
 ## Description
-RDBを経由して通信を行うためのVPNクライアントです。
+RDBを経由して通信を行うApplication Tunnel Clientです。
 
 RDBを利用することで、全ての通信を詳細に記録し分析することが可能になります。
 
@@ -11,5 +11,5 @@ RDBを利用することで、全ての通信を詳細に記録し分析する�
 
 ## Features Todo
 - [ ] RDB Tunnel Client
-- [ ] Host IDS Function
+- [ ] Host IDPS Function
 - [ ] Host Firewall Function

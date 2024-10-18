@@ -3,7 +3,7 @@ use dotenv::dotenv;
 
 mod select_device;
 mod host_idps;
-mod application_tunnel;
+mod rdb_tunnel;
 mod real_time_analytics;
 mod web_console;
 mod database;

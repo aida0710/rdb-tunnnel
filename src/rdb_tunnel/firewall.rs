@@ -1,4 +1,4 @@
-use crate::application_tunnel::firewall_packet::FirewallPacket;
+use crate::rdb_tunnel::firewall_packet::FirewallPacket;
 use pnet::packet::ip::IpNextHeaderProtocol;
 use std::net::IpAddr;
 
