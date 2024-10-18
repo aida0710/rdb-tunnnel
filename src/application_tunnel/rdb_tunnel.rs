@@ -1,10 +1,10 @@
-use crate::vpn::firewall::{Filter, IpFirewall, Policy};
-use crate::vpn::firewall_packet::FirewallPacket;
-use crate::vpn::packet_header::{parse_ip_header, parse_next_ip_header};
+use crate::application_tunnel::firewall::{Filter, IpFirewall, Policy};
+use crate::application_tunnel::firewall_packet::FirewallPacket;
+use crate::application_tunnel::packet_header::{parse_ip_header, parse_next_ip_header};
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use std::net::IpAddr;
 
-pub fn rdb_vpn(ethernet_packet: &[u8]) {
+pub fn rdb_tunnel(ethernet_packet: &[u8]) {
     // packetの簡単な解析
     let mut src_port: u16 = 0;
     let mut dst_port: u16 = 0;

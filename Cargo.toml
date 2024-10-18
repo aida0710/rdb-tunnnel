@@ -1,5 +1,5 @@
 [package]
-name = "rds-vpn"
+name = "rdb-tunnel"
 version = "0.1.0"
 edition = "2021"
 authors = ["相田 優希 <51500566+aida0710@users.noreply.github.com>"]

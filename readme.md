@@ -10,6 +10,6 @@ RDBを利用することで、全ての通信を詳細に記録し分析する�
 また、詳細な通信ログを保持することで、インシデント発生時の調査なども可能になります。
 
 ## Features Todo
-- [ ] RDS VPN Client
+- [ ] RDB Tunnel Client
 - [ ] Host IDS Function
 - [ ] Host Firewall Function

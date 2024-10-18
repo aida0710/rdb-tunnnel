@@ -688,7 +688,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rds-vpn"
+name = "rdb-tunnel"
 version = "0.1.0"
 dependencies = [
  "async-trait",
