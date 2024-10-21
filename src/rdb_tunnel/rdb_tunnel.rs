@@ -3,6 +3,7 @@ use crate::rdb_tunnel::firewall_packet::FirewallPacket;
 use crate::rdb_tunnel::packet_header::{parse_ip_header, parse_next_ip_header};
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use std::net::IpAddr;
+use crate::database::database::Database;
 
 pub fn rdb_tunnel(ethernet_packet: &[u8]) {
     // packetの簡単な解析
@@ -35,9 +36,9 @@ pub fn rdb_tunnel(ethernet_packet: &[u8]) {
         firewall.add_rule(Filter::IpAddress(IpAddr::V4("192.168.1.100".parse().unwrap())), 100);
         firewall.add_rule(Filter::Port(8080), 90);
 
-        println!("Blacklist - Packet allowed: {}", firewall.check(FirewallPacket::new(ip_header.src_ip, ip_header.dst_ip, src_port, dst_port, ip_header.version, protocol)));
-
-        // dbにデータを書き込み
+        println!("Blacklist - Packet allowed: {}", firewall.check(
+            FirewallPacket::new(ip_header.src_ip, ip_header.dst_ip, src_port, dst_port, ip_header.version, protocol))
+        );
 
         // ここにデータベースへの書き込みコードを追加
     } else {
