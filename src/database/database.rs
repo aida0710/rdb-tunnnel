@@ -6,7 +6,7 @@ use tokio_postgres::NoTls;
 
 pub static DATABASE: OnceLock<Database> = OnceLock::new();
 
-pub(crate) struct Database {
+pub struct Database {
     pub pool: Pool<PostgresConnectionManager<NoTls>>,
 }
 

@@ -1,3 +1,3 @@
 pub mod database;
-mod error;
-mod execute_query;
+pub mod error;
+pub mod execute_query;
