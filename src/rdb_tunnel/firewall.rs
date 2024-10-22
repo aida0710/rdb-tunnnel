@@ -39,6 +39,7 @@ impl IpFirewall {
     pub fn add_rule(&mut self, filter: Filter, priority: u32) {
         let rule = Rule { filter, priority };
         self.rules.push(rule);
+        // ルールを優先度の降順にソート
         self.rules.sort_by_key(|rule| std::cmp::Reverse(rule.priority));
     }
 
