@@ -21,9 +21,6 @@ pub async fn packet_analysis(interface: NetworkInterface) -> Result<(), Box<dyn 
                     Ok(_) => (),
                     Err(e) => eprintln!("パケット処理中にエラーが発生しました: {}", e),
                 }
-
-                // rdb_tunnel
-                crate::rdb_tunnel::rdb_tunnel_packet_write(&ethernet_packet).await?;
             }
             Err(e) => eprintln!("パケットの読み取り中にエラーが発生しました: {}", e),
         }

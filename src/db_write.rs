@@ -6,9 +6,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tokio_postgres::Transaction;
-use crate::rdb_tunnel::firewall::{Filter, IpFirewall, Policy};
-use crate::rdb_tunnel::firewall_packet::FirewallPacket;
-use crate::rdb_tunnel::packet_header::{parse_ip_header, parse_next_ip_header};
+use crate::firewall::{Filter, IpFirewall, Policy};
+use crate::firewall_packet::FirewallPacket;
+use crate::packet_header::{parse_ip_header, parse_next_ip_header};
 
 struct PacketData {
     src_ip: String,

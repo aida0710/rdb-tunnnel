@@ -6,16 +6,22 @@ use tokio::time::interval;
 
 mod select_device;
 mod inspector;
-mod rdb_tunnel;
 mod real_time_analytics;
 mod web_console;
 mod database;
 pub mod packet_analysis;
 mod error;
+mod db_read;
+mod packet_injection;
+mod packet_header;
+mod db_write;
+mod firewall;
+mod firewall_packet;
 
 use crate::database::database::Database;
 use crate::error::InitProcessError;
 use packet_analysis::packet_analysis;
+use crate::packet_injection::inject_packet;
 
 #[tokio::main]
 async fn main() -> Result<(), InitProcessError> {
@@ -42,7 +48,7 @@ async fn main() -> Result<(), InitProcessError> {
         let mut interval = interval(Duration::from_secs(1));
         loop {
             interval.tick().await;
-            rdb_tunnel::inject_packet().await;
+            inject_packet().await;
         }
     });
 
