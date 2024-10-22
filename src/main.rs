@@ -5,7 +5,7 @@ use tokio::task;
 use tokio::time::interval;
 
 mod select_device;
-mod host_idps;
+mod inspector;
 mod rdb_tunnel;
 mod real_time_analytics;
 mod web_console;

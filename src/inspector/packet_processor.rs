@@ -1,7 +1,7 @@
-use crate::host_idps::inspection::ip_header::{parse_ip_header, IpHeader};
-use crate::host_idps::ip_reassembly::IpReassembler;
-use crate::host_idps::inspection::tcp_header::{parse_tcp_header, parse_tcp_options};
-use crate::host_idps::tcp_stream::{TcpStream, TcpStreamKey, TCP_SYN};
+use crate::inspector::ip_header::{parse_ip_header, IpHeader};
+use crate::inspector::ip_reassembly::IpReassembler;
+use crate::inspector::tcp_header::{parse_tcp_header, parse_tcp_options};
+use crate::inspector::tcp_stream::{TcpStream, TcpStreamKey, TCP_SYN};
 use chrono::{DateTime, Local};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use std::collections::HashMap;
@@ -90,7 +90,7 @@ fn process_tcp_packet(
 // TCPヘッダーとペイロードを処理
 fn process_tcp_header_and_payload(
     ip_header: &IpHeader,
-    tcp_header: &crate::host_idps::inspection::tcp_header::TcpHeader,
+    tcp_header: &crate::inspector::tcp_header::TcpHeader,
     payload: &[u8],
     streams: &mut HashMap<TcpStreamKey, TcpStream>,
     arrival_time: SystemTime,
@@ -164,7 +164,7 @@ fn process_tcp_header_and_payload(
         );
 
         // ストリームが閉じられた場合、ストリームを削除
-        if stream.state == crate::host_idps::tcp_stream::TcpState::Closed {
+        if stream.state == crate::inspector::tcp_stream::TcpState::Closed {
             streams.remove(&stream_key);
         }
     }

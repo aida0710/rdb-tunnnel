@@ -1,4 +1,4 @@
-use crate::host_idps::{process_packet, IpReassembler, TcpState};
+use crate::inspector::{process_packet, IpReassembler, TcpState};
 use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{self, NetworkInterface};
 use std::time::Duration;
