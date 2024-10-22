@@ -1,5 +1,8 @@
+use std::time::Duration;
 use crate::select_device::select_device;
 use dotenv::dotenv;
+use tokio::task;
+use tokio::time::interval;
 
 mod select_device;
 mod host_idps;
@@ -35,9 +38,16 @@ async fn main() -> Result<(), InitProcessError> {
     println!("デバイスの選択に成功しました: {}", interface.name);
 
     // 非同期のパケット取得とnicに再注入
+    task::spawn(async {
+        let mut interval = interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            rdb_tunnel::inject_packet().await;
+        }
+    });
 
     // パケットの解析とデータベースへの保存
-    if let Err(e) = packet_analysis(interface) {
+    if let Err(e) = packet_analysis(interface).await {
         println!("パケットの解析に失敗しました: {}", InitProcessError::PacketAnalysisError(e.to_string()));
     }
 
