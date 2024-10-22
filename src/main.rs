@@ -17,6 +17,8 @@ mod packet_header;
 mod db_write;
 mod firewall;
 mod firewall_packet;
+mod config;
+mod packet;
 
 use crate::database::database::Database;
 use crate::error::InitProcessError;

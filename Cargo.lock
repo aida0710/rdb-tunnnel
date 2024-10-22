@@ -704,6 +704,7 @@ dependencies = [
  "chrono",
  "dotenv",
  "lazy_static",
+ "log",
  "pnet",
  "rand",
  "serde",
