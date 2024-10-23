@@ -19,3 +19,7 @@ serde_json = { version = "1.0" } # JSONのシリアライズ/デシリアライ�
 async-trait = { version = "0.1" } # 非同期トレイト
 thiserror = { version = "1.0" } # カスタムエラー型を簡単に定義
 lazy_static = { version = "1.5.0" } # 遅延初期化を行うマクロ
+log = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser"] }

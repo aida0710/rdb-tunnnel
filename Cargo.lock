@@ -704,6 +704,7 @@ dependencies = [
  "chrono",
  "dotenv",
  "lazy_static",
+ "log",
  "pnet",
  "rand",
  "serde",
@@ -711,6 +712,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-postgres",
+ "winapi",
 ]
 
 [[package]]

@@ -6,8 +6,6 @@ use tokio::time::interval;
 
 mod select_device;
 mod inspector;
-mod real_time_analytics;
-mod web_console;
 mod database;
 pub mod packet_analysis;
 mod error;
