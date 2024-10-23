@@ -34,6 +34,8 @@ pub fn parse_ip_header(data: &[u8]) -> Option<(IpHeader, usize)> {
     }
 
     let version = (data[0] >> 4) & 0xF;
+    //println!("version: {}", version);
+
     if version != 4 {
         return None;  // IPv4のみをサポート
     }

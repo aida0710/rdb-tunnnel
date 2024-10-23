@@ -19,6 +19,7 @@ mod firewall_packet;
 use crate::database::database::Database;
 use crate::error::InitProcessError;
 use packet_analysis::packet_analysis;
+use crate::db_write::start_packet_writer;
 use crate::packet_injection::inject_packet;
 
 #[tokio::main]
@@ -48,6 +49,10 @@ async fn main() -> Result<(), InitProcessError> {
             interval.tick().await;
             inject_packet().await;
         }
+    });
+
+    task::spawn(async {
+        start_packet_writer().await;
     });
 
     // パケットの解析とデータベースへの保存

@@ -9,7 +9,8 @@ pub struct IpHeader {
 }
 
 pub fn parse_ip_header(data: &[u8]) -> Option<IpHeader> {
-    let version = data[0] >> 4;
+    let version = (data[0] >> 4) & 0xF;
+    //println!("version: {}", version);
     match version {
         4 => Some(parse_ipv4_header(data)),
         6 => Some(parse_ipv6_header(data)),

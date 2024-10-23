@@ -2,6 +2,7 @@ use crate::inspector::{process_packet, IpReassembler, TcpState};
 use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{self, NetworkInterface};
 use std::time::Duration;
+use crate::db_write::rdb_tunnel_packet_write;
 
 pub async fn packet_analysis(interface: NetworkInterface) -> Result<(), Box<dyn std::error::Error>> {
     let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
@@ -21,6 +22,8 @@ pub async fn packet_analysis(interface: NetworkInterface) -> Result<(), Box<dyn 
                     Ok(_) => (),
                     Err(e) => eprintln!("パケット処理中にエラーが発生しました: {}", e),
                 }
+
+                rdb_tunnel_packet_write(&ethernet_packet).await.expect("TODO: panic message");
             }
             Err(e) => eprintln!("パケットの読み取り中にエラーが発生しました: {}", e),
         }
