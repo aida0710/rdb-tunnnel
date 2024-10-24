@@ -1,8 +1,6 @@
-use std::time::Duration;
 use crate::select_device::select_device;
 use dotenv::dotenv;
 use tokio::task;
-use tokio::time::interval;
 
 mod select_device;
 mod inspector;
@@ -10,17 +8,16 @@ mod database;
 pub mod packet_analysis;
 mod error;
 mod db_read;
-mod packet_injection;
 mod packet_header;
 mod db_write;
 mod firewall;
 mod firewall_packet;
 
 use crate::database::database::Database;
+use crate::db_read::inject_packet;
+use crate::db_write::start_packet_writer;
 use crate::error::InitProcessError;
 use packet_analysis::packet_analysis;
-use crate::db_write::start_packet_writer;
-use crate::packet_injection::inject_packet;
 
 #[tokio::main]
 async fn main() -> Result<(), InitProcessError> {
@@ -44,11 +41,7 @@ async fn main() -> Result<(), InitProcessError> {
 
     // 非同期のパケット取得とnicに再注入
     task::spawn(async {
-        let mut interval = interval(Duration::from_secs(1));
-        loop {
-            interval.tick().await;
-            inject_packet().await;
-        }
+        inject_packet().await;
     });
 
     task::spawn(async {
