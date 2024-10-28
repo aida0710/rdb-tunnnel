@@ -157,11 +157,11 @@ fn process_tcp_header_and_payload(
 
         stream.arrival_time = arrival_time;
 
-        println!("Arrival time: {}", arrival_time_to_string(arrival_time));
-        println!(
-            "Stream: {}:{} -> {}:{}",
-            stream_key.0, tcp_header.src_port, stream_key.2, tcp_header.dst_port
-        );
+        //println!("Arrival time: {}", arrival_time_to_string(arrival_time));
+        //println!(
+        //    "Stream: {}:{} -> {}:{}",
+        //    stream_key.0, tcp_header.src_port, stream_key.2, tcp_header.dst_port
+        //);
 
         // ストリームが閉じられた場合、ストリームを削除
         if stream.state == crate::inspector::tcp_stream::TcpState::Closed {
