@@ -1,7 +1,6 @@
 use crate::database::database::Database;
 use crate::database::error::DbError;
 use crate::database::execute_query::ExecuteQuery;
-use crate::select_device::select_device;
 use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{self, NetworkInterface};
 use std::net::IpAddr;
@@ -11,7 +10,6 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::interval;
 
-// カスタムエラー型の定義
 #[derive(Debug)]
 pub enum PacketError {
     NetworkError(String),
@@ -37,7 +35,6 @@ impl From<DbError> for PacketError {
     }
 }
 
-
 #[derive(Clone)]
 pub struct PacketInfo {
     pub src_ip: IpAddr,
@@ -45,14 +42,14 @@ pub struct PacketInfo {
     pub src_port: Option<i32>,
     pub dst_port: Option<i32>,
     pub protocol: i16,
-    pub timestamp: String,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
     pub data: Vec<u8>,
     pub raw_packet: Vec<u8>,
 }
 
 #[derive(Clone)]
 pub struct PacketPoller {
-    last_timestamp: Arc<Mutex<Option<String>>>,
+    last_timestamp: Arc<Mutex<Option<chrono::DateTime<chrono::Utc>>>>, // Changed from NaiveDateTime to DateTime<Utc>
     is_first_poll: Arc<AtomicBool>,
     my_ip: IpAddr,
     interface: Arc<NetworkInterface>,
@@ -93,173 +90,194 @@ impl PacketPoller {
     pub async fn poll_packets(&self) -> Result<Vec<PacketInfo>, PacketError> {
         let db = Database::get_database();
         let mut last_ts = self.last_timestamp.lock().await;
+        let is_first = self.is_first_poll.load(Ordering::SeqCst);
 
-        let query = match &*last_ts {
-            Some(_ts) => "
-               SELECT src_ip, dst_ip, src_port, dst_port, protocol,
-                   to_char(timestamp, 'YYYY-MM-DD HH24:MI:SS.US') as timestamp,
-                   data, raw_packet
-               FROM packets
-               WHERE timestamp > $1::timestamp
-                   AND (dst_ip = $2
-                       OR dst_ip = '255.255.255.255'
-                       OR dst_ip << '224.0.0.0/4'
-                   )
-               ORDER BY timestamp ASC
-               ",
-            None => "
-               SELECT src_ip, dst_ip, src_port, dst_port, protocol,
-                   to_char(timestamp, 'YYYY-MM-DD HH24:MI:SS.US') as timestamp,
-                   data, raw_packet
-               FROM packets
-               WHERE dst_ip = $1
-                   OR dst_ip = '255.255.255.255'
-                   OR dst_ip << '224.0.0.0/4'
-               ORDER BY timestamp ASC
-               ",
+        const MAX_PACKET_SIZE: i64 = 1500;  // i32からi64に変更
+
+        println!("Debug - 最終タイムスタンプ: {:?}", *last_ts);
+        println!("Debug - 初回実行: {}", is_first);
+
+        let (query, params): (_, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) = if is_first {
+            // 初回実行時の処理
+            println!("Debug - 初回実行、直近のパケットを取得");
+            (
+                "
+            SELECT src_ip, dst_ip, src_port, dst_port, protocol,
+                timestamp,
+                data, raw_packet
+            FROM packets
+            WHERE length(raw_packet) <= $1::bigint
+                AND (dst_ip = $2
+                    OR dst_ip = '255.255.255.255'
+                    OR dst_ip << '224.0.0.0/4'
+                )
+                AND timestamp >= NOW() - INTERVAL '30 seconds'
+            ORDER BY timestamp ASC
+            ",
+                vec![&MAX_PACKET_SIZE, &self.my_ip]
+            )
+        } else {
+            // 2回目以降の処理
+            match &*last_ts {
+                Some(ts) => {
+                    println!("Debug - タイムスタンプを使用したクエリ実行: {}", ts);
+                    (
+                        "
+                    SELECT src_ip, dst_ip, src_port, dst_port, protocol,
+                        timestamp,
+                        data, raw_packet
+                    FROM packets
+                    WHERE timestamp > $2
+                        AND length(raw_packet) <= $1::bigint
+                        AND (dst_ip = $3
+                            OR dst_ip = '255.255.255.255'
+                            OR dst_ip << '224.0.0.0/4'
+                        )
+                    ORDER BY timestamp ASC
+                    ",
+                        vec![&MAX_PACKET_SIZE, ts, &self.my_ip]
+                    )
+                }
+                None => {
+                    println!("Debug - タイムスタンプが不正な状態の為、現在時刻の5秒前から取得");
+                    // タイムスタンプがない場合は現在時刻から5秒前を基準にする
+                    *last_ts = Some(chrono::Utc::now() - chrono::Duration::seconds(5));
+                    (
+                        "
+                    SELECT src_ip, dst_ip, src_port, dst_port, protocol,
+                        timestamp,
+                        data, raw_packet
+                    FROM packets
+                    WHERE length(raw_packet) <= $1::bigint
+                        AND (dst_ip = $2
+                            OR dst_ip = '255.255.255.255'
+                            OR dst_ip << '224.0.0.0/4'
+                        )
+                        AND timestamp >= NOW() - INTERVAL '5 seconds'
+                    ORDER BY timestamp ASC
+                    ",
+                        vec![&MAX_PACKET_SIZE, &self.my_ip]
+                    )
+                }
+            }
+        };
+        
+        println!("Debug - 実行クエリ: {}", query);
+        println!("Debug - クエリパラメータ: {:?}", params);
+
+        let rows = match db.query(query, &params).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                println!("Debug - Database error: {:?}", e);
+                return Err(PacketError::from(e));
+            }
         };
 
-        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = match &*last_ts {
-            Some(ts) => vec![ts, &self.my_ip],
-            None => vec![&self.my_ip],
-        };
+        println!("Debug -　{}行のデータを取得しました", rows.len());
 
-        let rows = db.query(query, &params).await.map_err(PacketError::from)?;
+        let mut packet_infos: Vec<PacketInfo> = Vec::new();
+        let mut latest_timestamp = None;
 
-        let packet_infos: Vec<PacketInfo> = rows
-            .into_iter()
-            .map(|row| PacketInfo {
+        for row in rows {
+            let timestamp: chrono::DateTime<chrono::Utc> = row.get("timestamp");
+            println!("Debug - パケットのタイムスタンプを処理中: {}", timestamp);
+
+            // 最新のタイムスタンプを更新
+            if latest_timestamp.is_none() || latest_timestamp.unwrap() < timestamp {
+                latest_timestamp = Some(timestamp);
+            }
+
+            let packet_info = PacketInfo {
                 src_ip: row.get("src_ip"),
                 dst_ip: row.get("dst_ip"),
                 src_port: row.get("src_port"),
                 dst_port: row.get("dst_port"),
                 protocol: row.get("protocol"),
-                timestamp: row.get("timestamp"),
+                timestamp,
                 data: row.get("data"),
                 raw_packet: row.get("raw_packet"),
-            })
-            .filter(|packet| self.should_process_packet(packet))
-            .collect();
+            };
 
-        if let Some(last_packet) = packet_infos.last() {
-            *last_ts = Some(last_packet.timestamp.clone());
-        }
-
-        Ok(packet_infos)
-    }
-
-    async fn send_raw_packet_with_retry(
-        &self,
-        raw_packet: &[u8],
-        max_retries: u32,
-        retry_delay: Duration,
-    ) -> Result<(), PacketError> {
-        let mut retries = 0;
-        let mut last_error = None;
-
-        while retries < max_retries {
-            match self.send_raw_packet(raw_packet).await {
-                Ok(_) => {
-                    self.packets_sent.fetch_add(1, Ordering::Relaxed);
-                    if retries > 0 {
-                        println!("パケット送信成功 ({}回目の再試行で成功)", retries + 1);
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    last_error = Some(e);
-                    if retries < max_retries - 1 {
-                        eprintln!("送信失敗（再試行 {}/{}）", retries + 1, max_retries);
-                        retries += 1;
-                        tokio::time::sleep(retry_delay).await;
-                    }
-                }
+            if self.should_process_packet(&packet_info) {
+                packet_infos.push(packet_info);
             }
         }
 
-        self.packets_failed.fetch_add(1, Ordering::Relaxed);
-        Err(last_error.unwrap_or(PacketError::NetworkError("不明なエラー".to_string())))
-    }
-
-    async fn send_raw_packet(&self, raw_packet: &[u8]) -> Result<(), PacketError> {
-        let (mut tx, _) = match datalink::channel(&self.interface, Default::default()) {
-            Ok(Ethernet(tx, rx)) => (tx, rx),
-            Ok(_) => return Err(PacketError::NetworkError("未対応のチャネルタイプです".to_string())),
-            Err(e) => return Err(PacketError::NetworkError(e.to_string())),
-        };
-
-        match tx.send_to(raw_packet, None) {
-            Some(Ok(_)) => Ok(()),
-            Some(Err(e)) => Err(PacketError::NetworkError(format!("パケット送信に失敗しました: {}", e))),
-            None => Err(PacketError::NetworkError("宛先が指定されていません".to_string())),
+        // 最新のタイムスタンプで更新
+        if let Some(ts) = latest_timestamp {
+            println!("Debug - 最終タイムスタンプを更新: {}", ts);
+            *last_ts = Some(ts);
         }
+
+        if is_first {
+            self.is_first_poll.store(false, Ordering::SeqCst);
+            println!("Debug - 初回ポーリング完了、フラグを更新しました");
+        }
+
+        Ok(packet_infos)
     }
 
     pub async fn poll_and_send_packets(&self) -> Result<(), PacketError> {
         match self.poll_packets().await {
             Ok(packets) => {
                 let packet_count = packets.len();
-                if packet_count > 0 {
-                    println!("{}個のパケットを取得しました", packet_count);
-                }
+                println!("{}個のパケットを取得しました", packet_count);
 
                 for packet in packets {
-                    println!("パケット処理中: {} -> {}", packet.src_ip, packet.dst_ip);
+                    println!("パケット送信中: {}: {} {}",
+                             packet.timestamp,
+                             packet.src_ip,
+                             packet.dst_ip
+                    );
 
-                    match self.send_raw_packet_with_retry(
-                        &packet.raw_packet,
-                        3,
-                        Duration::from_millis(100),
-                    ).await {
-                        Ok(_) => {
-                            let (sent, failed) = self.get_stats();
-                            println!(
-                                "パケット送信成功: {} -> {} (成功: {}, 失敗: {})",
-                                packet.src_ip,
-                                packet.dst_ip,
-                                sent,
-                                failed
-                            );
+                    if packet.raw_packet.len() > 1500 {
+                        println!("パケットサイズが大きすぎるためスキップ: {} bytes",
+                                 packet.raw_packet.len()
+                        );
+                        self.packets_failed.fetch_add(1, Ordering::SeqCst);
+                        continue;
+                    }
+
+                    let (mut tx, _) = match datalink::channel(&self.interface, Default::default()) {
+                        Ok(Ethernet(tx, rx)) => (tx, rx),
+                        Ok(_) => return Err(PacketError::NetworkError(
+                            "未対応のチャネルタイプです".to_string()
+                        )),
+                        Err(e) => return Err(PacketError::NetworkError(e.to_string())),
+                    };
+
+                    match tx.send_to(&*packet.raw_packet, None) {
+                        Some(Ok(_)) => {
+                            self.packets_sent.fetch_add(1, Ordering::SeqCst);
                         }
-                        Err(e) => {
-                            let (sent, failed) = self.get_stats();
-                            eprintln!(
-                                "パケット送信失敗: {} (成功: {}, 失敗: {})",
-                                e, sent, failed
-                            );
+                        Some(Err(e)) => {
+                            println!("パケット送信に失敗しました: {}", e);
+                            self.packets_failed.fetch_add(1, Ordering::SeqCst);
+                            continue;
+                        }
+                        None => {
+                            println!("宛先が指定されていないためスキップ");
+                            self.packets_failed.fetch_add(1, Ordering::SeqCst);
+                            continue;
                         }
                     }
                 }
 
-                if packet_count > 0 {
-                    let (sent, failed) = self.get_stats();
-                    println!("==== パケット統計情報 ====");
-                    println!("送信成功: {} パケット", sent);
-                    println!("送信失敗: {} パケット", failed);
-                    if sent + failed > 0 {
-                        println!("成功率: {:.2}%", (sent as f64 / (sent + failed) as f64) * 100.0);
-                    }
-                    println!("========================");
-                }
+                let sent = self.packets_sent.load(Ordering::SeqCst);
+                let failed = self.packets_failed.load(Ordering::SeqCst);
+                println!("パケット処理完了 - 成功: {}, 失敗: {}", sent, failed);
 
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                println!("Debug - ポーリングとパケット送信中のエラー: {:?}", e);
+                Err(e)
+            }
         }
-    }
-
-    pub fn get_stats(&self) -> (u64, u64) {
-        (
-            self.packets_sent.load(Ordering::Relaxed),
-            self.packets_failed.load(Ordering::Relaxed)
-        )
     }
 }
 
-pub async fn inject_packet() -> Result<(), PacketError> {
-    let interface = select_device()
-        .map_err(|e| PacketError::DeviceError(e.to_string()))?;
-
+pub async fn inject_packet(interface: NetworkInterface) -> Result<(), PacketError> {
     let my_ip = interface.ips
         .iter()
         .find(|ip| ip.is_ipv4())
