@@ -40,16 +40,19 @@ async fn main() -> Result<(), InitProcessError> {
     println!("デバイスの選択に成功しました: {}", interface.name);
 
     // 非同期のパケット取得とnicに再注入
-    task::spawn(async {
-        inject_packet().await;
+    let polling_interface = interface.clone();
+    task::spawn(async move {
+        println!("非同期でポーリングを開始します");
+        inject_packet(polling_interface).await.expect("パケットの再注入に失敗しました");
     });
 
-    task::spawn(async {
+    let analysis_interface = interface.clone();
+    task::spawn(async move {
         start_packet_writer().await;
     });
 
     // パケットの解析とデータベースへの保存
-    if let Err(e) = packet_analysis(interface).await {
+    if let Err(e) = packet_analysis(analysis_interface).await {
         println!("パケットの解析に失敗しました: {}", InitProcessError::PacketAnalysisError(e.to_string()));
     }
 
