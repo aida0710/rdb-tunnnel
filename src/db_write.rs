@@ -199,6 +199,8 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
             PACKET_BUFFER.lock().await.extend(packets);
             return Err(crate::database::error::DbError::Postgres(e));
         }
+
+        println!("パケットを挿入しました: src_ip={}, dst_ip={}, protocol={}", packet.src_ip.0, packet.dst_ip.0, packet.protocol);
     }
 
     match transaction.commit().await {
