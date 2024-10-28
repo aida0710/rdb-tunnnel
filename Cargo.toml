@@ -20,7 +20,6 @@ async-trait = { version = "0.1" } # 非同期トレイト
 thiserror = { version = "1.0" } # カスタムエラー型を簡単に定義
 lazy_static = { version = "1.5.0" } # 遅延初期化を行うマクロ
 log = "0.4"
-byte = "0.2.7"
 bytes = "1.7.2"
 postgres-types = "0.2.0"
 
