@@ -13,4 +13,7 @@ pub enum DbError {
 
     #[error("Database initialization error")]
     Initialization,
+
+    #[error("Other error: {0}")]
+    Other(String),
 }
