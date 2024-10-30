@@ -5,23 +5,54 @@ edition = "2021"
 authors = ["相田 優希 <51500566+aida0710@users.noreply.github.com>"]
 
 [dependencies]
-dotenv = { version = "0.15" } # .envファイルを読み込む
-pnet = { version = "0.35" } # パケットキャプチャ/送信
-rand = { version = "0.8" } # 乱数生成
-base64 = { version = "0.22" } # Base64エンコード/デコード
-chrono = { version = "0.4" } # 時間を扱うライブラリ
-tokio = { version = "1.16", features = ["full"] } # 非同期処理
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] } # 非同期のPostgreSQLクライアント
-bb8 = { version = "0.8" } # データベースのコネクションプール
-bb8-postgres = { version = "0.8" } # PostgreSQLに統合されたコネクションプール
-serde = { version = "1.0", features = ["derive"] } # シリアライズ/デシリアライズ フレームワーク
-serde_json = { version = "1.0" } # JSONのシリアライズ/デシリアライズ
-async-trait = { version = "0.1" } # 非同期トレイト
-thiserror = { version = "1.0" } # カスタムエラー型を簡単に定義
-lazy_static = { version = "1.5.0" } # 遅延初期化を行うマクロ
-log = "0.4"
-bytes = "1.7.2"
-postgres-types = "0.2.0"
+# === ネットワーキング関連 ===
+# 低レベルのネットワークパケット操作
+pnet = { version = "0.35" }
+# 仮想ネットワークインターフェース (TUN/TAP)
+tun-tap = { version = "0.1" }
+# Linuxネットワーク設定 (netlink)
+rtnetlink = { version = "0.14" }
+# IPアドレス/サブネット操作
+ipnetwork = { version = "0.20" }
 
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser"] }
+# === データベース関連 ===
+# 非同期PostgreSQLクライアント
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+# コネクションプール
+bb8 = { version = "0.8" }
+bb8-postgres = { version = "0.8" }
+# PostgreSQL型システム
+postgres-types = { version = "0.2" }
+
+# === 非同期処理・並行処理 ===
+# 非同期ランタイムとツール
+tokio = { version = "1.41", features = ["full"] }
+# 非同期トレイト実装
+async-trait = { version = "0.1" }
+# Future型と非同期プログラミング
+futures = { version = "0.3.31" }
+
+# === シリアライゼーション・データ形式 ===
+# データシリアライズ/デシリアライズ
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+
+# === エラー処理・ロギング ===
+# カスタムエラー型
+thiserror = { version = "1.0" }
+# ロギングファサード
+log = { version = "0.4" }
+
+# === ユーティリティ ===
+# 環境変数管理
+dotenv = { version = "0.15" }
+# 日付と時刻操作
+chrono = { version = "0.4" }
+# 乱数生成
+rand = { version = "0.8" }
+# Base64エンコーディング
+base64 = { version = "0.22" }
+# 遅延初期化された静的変数
+lazy_static = { version = "1.5" }
+# バイトバッファ操作
+bytes = { version = "1.8" }
