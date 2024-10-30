@@ -1,6 +1,7 @@
 use crate::database::database::Database;
 use crate::database::error::DbError;
 use crate::database::execute_query::ExecuteQuery;
+use log::{debug, error, info, trace};
 use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{self, NetworkInterface};
 use std::net::IpAddr;
@@ -92,14 +93,15 @@ impl PacketPoller {
         let mut last_ts = self.last_timestamp.lock().await;
         let is_first = self.is_first_poll.load(Ordering::SeqCst);
 
-        const MAX_PACKET_SIZE: i64 = 1500;  // i32からi64に変更
+        const MAX_PACKET_SIZE: i64 = 1500;
 
-        println!("Debug - 最終タイムスタンプ: {:?}", *last_ts);
-        println!("Debug - 初回実行: {}", is_first);
+        // 現在時刻を取得して、タイムスタンプの更新に使用
+        let current_time = chrono::Utc::now();
+        debug!("現在時刻: {}", current_time);
 
         let (query, params): (_, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) = if is_first {
             // 初回実行時の処理
-            println!("Debug - 初回実行、直近のパケットを取得");
+            info!("初回実行、直近のパケットを取得");
             (
                 "
             SELECT src_ip, dst_ip, src_port, dst_port, protocol,
@@ -120,7 +122,8 @@ impl PacketPoller {
             // 2回目以降の処理
             match &*last_ts {
                 Some(ts) => {
-                    println!("Debug - タイムスタンプを使用したクエリ実行: {}", ts);
+                    info!("直近のタイムスタンプから取得: {}", ts);
+                    trace!("タイムスタンプを使用したクエリ実行: {}", ts);
                     (
                         "
                     SELECT src_ip, dst_ip, src_port, dst_port, protocol,
@@ -139,9 +142,9 @@ impl PacketPoller {
                     )
                 }
                 None => {
-                    println!("Debug - タイムスタンプが不正な状態の為、現在時刻の5秒前から取得");
-                    // タイムスタンプがない場合は現在時刻から5秒前を基準にする
-                    *last_ts = Some(chrono::Utc::now() - chrono::Duration::seconds(5));
+                    error!("タイムスタンプが不正な状態の為、現在時刻の5秒前から取得しました");
+                    let five_seconds_ago = current_time - chrono::Duration::seconds(5);
+                    *last_ts = Some(five_seconds_ago);
                     (
                         "
                     SELECT src_ip, dst_ip, src_port, dst_port, protocol,
@@ -161,30 +164,34 @@ impl PacketPoller {
                 }
             }
         };
-        
-        println!("Debug - 実行クエリ: {}", query);
-        println!("Debug - クエリパラメータ: {:?}", params);
+
+        debug!("実行クエリ: {}", query);
+        debug!("クエリパラメータ: {:?}", params);
+        debug!("クエリ実行前のタイムスタンプ: {:?}", *last_ts);
 
         let rows = match db.query(query, &params).await {
             Ok(rows) => rows,
             Err(e) => {
-                println!("Debug - Database error: {:?}", e);
+                error!("データベースクエリエラー: {:?}", e);
+                debug!("エラー発生時のタイムスタンプを更新: {}", current_time);
+                *last_ts = Some(current_time);
                 return Err(PacketError::from(e));
             }
         };
 
-        println!("Debug -　{}行のデータを取得しました", rows.len());
+        debug!("{}行のデータを取得しました", rows.len());
 
         let mut packet_infos: Vec<PacketInfo> = Vec::new();
         let mut latest_timestamp = None;
 
         for row in rows {
             let timestamp: chrono::DateTime<chrono::Utc> = row.get("timestamp");
-            println!("Debug - パケットのタイムスタンプを処理中: {}", timestamp);
+            trace!("パケットのタイムスタンプを処理中: {}", timestamp);
 
             // 最新のタイムスタンプを更新
             if latest_timestamp.is_none() || latest_timestamp.unwrap() < timestamp {
                 latest_timestamp = Some(timestamp);
+                trace!("最新のタイムスタンプを更新: {}", timestamp);
             }
 
             let packet_info = PacketInfo {
@@ -199,19 +206,28 @@ impl PacketPoller {
             };
 
             if self.should_process_packet(&packet_info) {
+                trace!("パケットを処理対象に追加: {} -> {}", packet_info.src_ip, packet_info.dst_ip);
                 packet_infos.push(packet_info);
             }
         }
 
-        // 最新のタイムスタンプで更新
-        if let Some(ts) = latest_timestamp {
-            println!("Debug - 最終タイムスタンプを更新: {}", ts);
-            *last_ts = Some(ts);
-        }
+        // 最新のタイムスタンプの更新ロジックを修正
+        let new_timestamp = if let Some(ts) = latest_timestamp {
+            // パケットが見つかった場合は、その最新のタイムスタンプを使用
+            ts
+        } else {
+            // パケットが見つからなかった場合は、現在時刻を使用
+            debug!("パケットが見つからなかったため、現在時刻を使用: {}", current_time);
+            current_time
+        };
+
+        *last_ts = Some(new_timestamp);
+        info!("タイムスタンプを更新: {}", new_timestamp);
+        debug!("取得したパケット数: {}", packet_infos.len());
 
         if is_first {
             self.is_first_poll.store(false, Ordering::SeqCst);
-            println!("Debug - 初回ポーリング完了、フラグを更新しました");
+            info!("初回ポーリング完了、フラグを更新しました");
         }
 
         Ok(packet_infos)
@@ -221,18 +237,17 @@ impl PacketPoller {
         match self.poll_packets().await {
             Ok(packets) => {
                 let packet_count = packets.len();
-                println!("{}個のパケットを取得しました", packet_count);
+                debug!("{}個のパケットを取得しました", packet_count);
 
                 for packet in packets {
-                    println!("パケット送信中: {}: {} {}",
-                             packet.timestamp,
-                             packet.src_ip,
-                             packet.dst_ip
+                    trace!("パケット送信中: {}: {} {}",
+                                packet.timestamp,
+                                packet.src_ip,
+                                packet.dst_ip
                     );
-
                     if packet.raw_packet.len() > 1500 {
-                        println!("パケットサイズが大きすぎるためスキップ: {} bytes",
-                                 packet.raw_packet.len()
+                        debug!("パケットサイズが大きすぎるためスキップ: {} bytes",
+                                    packet.raw_packet.len()
                         );
                         self.packets_failed.fetch_add(1, Ordering::SeqCst);
                         continue;
@@ -240,9 +255,10 @@ impl PacketPoller {
 
                     let (mut tx, _) = match datalink::channel(&self.interface, Default::default()) {
                         Ok(Ethernet(tx, rx)) => (tx, rx),
-                        Ok(_) => return Err(PacketError::NetworkError(
-                            "未対応のチャネルタイプです".to_string()
-                        )),
+                        Ok(_) => {
+                            error!("未対応のチャネルタイプです");
+                            return Err(PacketError::NetworkError("未対応のチャネルタイプです".to_string()));
+                        }
                         Err(e) => return Err(PacketError::NetworkError(e.to_string())),
                     };
 
@@ -251,12 +267,12 @@ impl PacketPoller {
                             self.packets_sent.fetch_add(1, Ordering::SeqCst);
                         }
                         Some(Err(e)) => {
-                            println!("パケット送信に失敗しました: {}", e);
+                            error!("パケット送信に失敗しました: {}", e);
                             self.packets_failed.fetch_add(1, Ordering::SeqCst);
                             continue;
                         }
                         None => {
-                            println!("宛先が指定されていないためスキップ");
+                            error!("宛先が指定されていないためスキップ");
                             self.packets_failed.fetch_add(1, Ordering::SeqCst);
                             continue;
                         }
@@ -265,12 +281,12 @@ impl PacketPoller {
 
                 let sent = self.packets_sent.load(Ordering::SeqCst);
                 let failed = self.packets_failed.load(Ordering::SeqCst);
-                println!("パケット処理完了 - 成功: {}, 失敗: {}", sent, failed);
+                debug!("パケット処理完了 - 成功: {}, 失敗: {}", sent, failed);
 
                 Ok(())
             }
             Err(e) => {
-                println!("Debug - ポーリングとパケット送信中のエラー: {:?}", e);
+                error!("ポーリングとパケット送信中のエラー: {:?}", e);
                 Err(e)
             }
         }
@@ -284,7 +300,7 @@ pub async fn inject_packet(interface: NetworkInterface) -> Result<(), PacketErro
         .map(|ip| ip.ip())
         .ok_or_else(|| PacketError::DeviceError("IPv4アドレスが見つかりません".to_string()))?;
 
-    println!("パケット転送を開始します: {}", my_ip);
+    info!("パケット転送を開始します: {}", my_ip);
 
     let poller = PacketPoller::new(my_ip, interface);
     let mut interval = interval(Duration::from_secs(1));
@@ -293,7 +309,7 @@ pub async fn inject_packet(interface: NetworkInterface) -> Result<(), PacketErro
         interval.tick().await;
 
         if let Err(e) = poller.poll_and_send_packets().await {
-            eprintln!("パケット処理中にエラーが発生しました: {:?}", e);
+            error!("パケット処理中にエラーが発生しました: {:?}", e);
         }
     }
 }
