@@ -8,6 +8,7 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+use log::{debug, error, info, trace};
 use tokio::sync::Mutex;
 use tokio::time::interval;
 use tokio_postgres::types::{IsNull, ToSql, Type};
@@ -151,13 +152,13 @@ lazy_static! {
 
 // パケットライターのメインループ
 pub async fn start_packet_writer() {
-    println!("パケットライターを開始します");
+    info!("パケットライターを開始します");
     let mut interval = interval(Duration::from_millis(300));
     loop {
         interval.tick().await;
         // 300ミリ秒ごとにバッファをフラッシュ
         if let Err(e) = flush_packet_buffer().await {
-            eprintln!("パケットバッファのフラッシュに失敗しました: {}", e);
+            error!("パケットバッファのフラッシュに失敗しました: {}", e);
         }
     }
 }
@@ -194,22 +195,21 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
         ];
 
         if let Err(e) = transaction.execute(query, params).await {
-            eprintln!("パケットの挿入に失敗しました: {}", e);
+            error!("パケットの挿入に失敗しました: {}", e);
             transaction.rollback().await?;
             PACKET_BUFFER.lock().await.extend(packets);
             return Err(crate::database::error::DbError::Postgres(e));
         }
-
-        println!("パケットを挿入しました: src_ip={}, dst_ip={}, protocol={}", packet.src_ip.0, packet.dst_ip.0, packet.protocol);
+        trace!("パケットを挿入しました: src_ip={}, dst_ip={}, protocol={}", packet.src_ip.0, packet.dst_ip.0, packet.protocol);
     }
 
     match transaction.commit().await {
         Ok(_) => {
-            println!("{}個のパケットを正常に挿入しました", packets.len());
+            debug!("{}個のパケットを正常に挿入しました", packets.len());
             Ok(())
         }
         Err(e) => {
-            eprintln!("トランザクションのコミットに失敗しました: {}", e);
+            error!("トランザクションのコミットに失敗しました: {}", e);
             PACKET_BUFFER.lock().await.extend(packets);
             Err(crate::database::error::DbError::Postgres(e))
         }

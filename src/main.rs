@@ -28,11 +28,6 @@ use packet_analysis::packet_analysis;
 async fn main() -> Result<(), InitProcessError> {
     setup_logger().map_err(|e| InitProcessError::LoggerError(e.to_string()))?;
 
-    log::info!("アプリケーション起動");
-    log::debug!("デバッグ情報");
-    log::warn!("警告メッセージ");
-    log::error!("エラーメッセージ");
-
     dotenv().map_err(|e| InitProcessError::EnvFileReadError(e.to_string()))?;
 
     let timescale_host = dotenv::var("TIMESCALE_DB_HOST").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
@@ -52,7 +47,7 @@ async fn main() -> Result<(), InitProcessError> {
     println!("仮想NICの作成に成功しました: {}", interface.name());
 
     // IPアドレスの設定とインターフェースの有効化
-    setup_interface("tun0", "192.168.0.25/24").await?;
+    setup_interface("tun0", "192.168.0.150/24").await?;
 
     // デバイスの選択
     let interface = select_device()

@@ -1,5 +1,5 @@
 use env_logger::{Builder, Target};
-use log::LevelFilter;
+use log::{info, LevelFilter};
 use std::fs::File;
 use std::io::Write;
 
@@ -10,7 +10,7 @@ pub fn setup_logger() -> Result<(), Box<dyn std::error::Error>> {
     // ビルダーでロガーをカスタマイズ
     Builder::new()
         // ログレベルの設定
-        .filter_level(LevelFilter::Debug)
+        .filter_level(LevelFilter::Info)
         // タイムスタンプ付きのフォーマット
         .format(|buf, record| {
             writeln!(
@@ -24,6 +24,7 @@ pub fn setup_logger() -> Result<(), Box<dyn std::error::Error>> {
         })
         // ファイルに出力
         .target(Target::Pipe(Box::new(file)))
+        .target(Target::Stdout)
         .init();
 
     Ok(())
