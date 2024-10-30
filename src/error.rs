@@ -22,4 +22,8 @@ pub enum InitProcessError {
 
     #[error("仮想デバイスの作成に失敗しました: {0}")]
     VirtualInterfaceError(String),
+
+    #[error("ロガーの初期化に失敗しました: {0}")]
+    LoggerError(String),
+
 }
