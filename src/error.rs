@@ -19,4 +19,7 @@ pub enum InitProcessError {
 
     #[error("データベース接続に失敗しました: {0}")]
     DatabaseConnectionError(String),
+
+    #[error("仮想デバイスの作成に失敗しました: {0}")]
+    VirtualInterfaceError(String),
 }

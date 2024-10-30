@@ -1,6 +1,7 @@
 use crate::select_device::select_device;
 use dotenv::dotenv;
 use tokio::task;
+use tun_tap::{Iface, Mode};
 
 mod select_device;
 mod inspector;
@@ -12,15 +13,26 @@ mod packet_header;
 mod db_write;
 mod firewall;
 mod firewall_packet;
+mod virtual_interface;
+mod setup_logger;
 
 use crate::database::database::Database;
 use crate::db_read::inject_packet;
 use crate::db_write::start_packet_writer;
 use crate::error::InitProcessError;
 use packet_analysis::packet_analysis;
+use crate::setup_logger::setup_logger;
+use crate::virtual_interface::setup_interface;
 
 #[tokio::main]
 async fn main() -> Result<(), InitProcessError> {
+    setup_logger()?;
+
+    log::info!("アプリケーション起動");
+    log::debug!("デバッグ情報");
+    log::warn!("警告メッセージ");
+    log::error!("エラーメッセージ");
+    
     dotenv().map_err(|e| InitProcessError::EnvFileReadError(e.to_string()))?;
 
     let timescale_host = dotenv::var("TIMESCALE_DB_HOST").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
@@ -33,6 +45,16 @@ async fn main() -> Result<(), InitProcessError> {
     Database::connect(&timescale_host, timescale_port, &timescale_user, &timescale_password, &timescale_db)
         .await
         .map_err(|e| InitProcessError::DatabaseConnectionError(e.to_string()))?;
+    
+    // 仮想NIC(tun0)の作成
+    let interface = Iface::new("tun0", Mode::Tun)
+        .map_err(|e| InitProcessError::VirtualInterfaceError(e.to_string()))?;
+    println!("仮想NICの作成に成功しました: {}", interface.name());
+
+    // IPアドレスの設定とインターフェースの有効化
+    setup_interface("tun0", "192.168.0.25/24")
+        .await
+        .map_err(|e| InitProcessError::VirtualInterfaceError(e.to_string()))?;
 
     // デバイスの選択
     let interface = select_device()
