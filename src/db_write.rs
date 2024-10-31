@@ -158,7 +158,7 @@ struct PacketData {
     dst_ip: InetAddr,
     src_port: i32,
     dst_port: i32,
-    protocol: i16,
+    protocol: u8,
     timestamp: chrono::DateTime<Utc>,
     data: Vec<u8>,
     raw_packet: Vec<u8>,
@@ -225,6 +225,7 @@ pub async fn start_packet_writer() {
 // バッファをデータベースに書き込む
 async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
     let mut buffer = PACKET_BUFFER.lock().await;
+    info!("バッファに{}個のパケットがあります", buffer.len());
     if buffer.is_empty() {
         info!("バッファが空の為、データベースへの書き込みをスキップしました");
         return Ok(());
@@ -257,7 +258,6 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
                 IpAddr::V4(_) => 4,
                 IpAddr::V6(_) => 6,
             },
-            IpNextHeaderProtocol::new(packet.protocol as u8),
         );
 
         // firewallでチェック
@@ -286,9 +286,6 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
             PACKET_BUFFER.lock().await.extend(packets);
             return Err(crate::database::error::DbError::Postgres(e));
         }
-        if packet.protocol == 1 {
-            info!("ICMPパケットを挿入しました: src_ip={}, dst_ip={}", packet.src_ip.0, packet.dst_ip.0);
-        }
         trace!("パケットを挿入しました: src_ip={}, dst_ip={}, protocol={}", packet.src_ip.0, packet.dst_ip.0, packet.protocol);
     }
 
@@ -307,20 +304,39 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
 
 // パケットの書き込みエントリーポイント
 pub async fn rdb_tunnel_packet_write(ethernet_packet: &[u8]) -> Result<(), crate::database::error::DbError> {
-    let packet_info = parse_and_analyze_packet(ethernet_packet).await?;
+    let timestamp = Utc::now();
 
-    // 統計情報の更新
-    PACKET_STATS
-        .update(
-            Protocol::from_u16(packet_info.protocol as u16),
-            ethernet_packet.len() as u64,
-            packet_info.src_port as u16,
-            packet_info.dst_port as u16,
-        )
-        .await;
+    // イーサネットヘッダーからMACアドレスを取得（最低14バイトあることは確認）
+    if ethernet_packet.len() < 14 {
+        error!("Invalid ethernet packet length");
+        return Ok(());
+    }
+
+    let src_mac = MacAddr([
+        ethernet_packet[6], ethernet_packet[7], ethernet_packet[8],
+        ethernet_packet[9], ethernet_packet[10], ethernet_packet[11]
+    ]);
+    let dst_mac = MacAddr([
+        ethernet_packet[0], ethernet_packet[1], ethernet_packet[2],
+        ethernet_packet[3], ethernet_packet[4], ethernet_packet[5]
+    ]);
+
+    let packet_data = PacketData {
+        src_mac,
+        dst_mac,
+        src_ip: InetAddr(IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))), // ダミー値
+        dst_ip: InetAddr(IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))), // ダミー値
+        src_port: 0,    // 不要な情報
+        dst_port: 0,    // 不要な情報
+        protocol: 0,    // 不要な情報
+        timestamp,
+        data: Vec::new(), // 不要な情報
+        raw_packet: ethernet_packet.to_vec(),  // 生のパケットデータ
+    };
 
     // バッファに追加
-    PACKET_BUFFER.lock().await.push(packet_info);
+    PACKET_BUFFER.lock().await.push(packet_data);
+
     Ok(())
 }
 
@@ -344,7 +360,6 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
         let mut dst_port: u16 = 0;
         let mut src_ip = IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0));
         let mut dst_ip = IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0));
-        let mut protocol: u8 = 0;
         let mut payload_offset: usize = 14;
 
         if ethernet_packet.len() < 14 {
@@ -358,49 +373,9 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                 if let Some(ip_header) = parse_ip_header(&ethernet_packet[14..]) {
                     src_ip = ip_header.src_ip;
                     dst_ip = ip_header.dst_ip;
-                    protocol = ip_header.protocol;
-
-                    if protocol == 6 || protocol == 17 || protocol == 1 || protocol == 58 {
-                        payload_offset = 14 + match ip_header.version {
-                            4 => {
-                                if protocol == 1 {  // ICMPv4
-                                    // ICMPヘッダは8バイト
-                                    let icmp_header_size = 8;
-                                    20 + icmp_header_size
-                                } else {
-                                    20  // 通常のIPv4ヘッダサイズ
-                                }
-                            }
-                            6 => {
-                                if protocol == 58 {  // ICMPv6
-                                    // ICMPv6ヘッダは8バイト
-                                    let icmpv6_header_size = 8;
-                                    40 + icmpv6_header_size
-                                } else {
-                                    40  // 通常のIPv6ヘッダサイズ
-                                }
-                            }
-                            _ => return Ok(create_empty_packet_data(ethernet_packet)),
-                        };
-
-                        if ethernet_packet.len() > payload_offset {
-                            if protocol == 6 || protocol == 17 {  // TCPまたはUDPの場合
-                                let next_header = parse_next_ip_header(&ethernet_packet[payload_offset..]);
-                                src_port = next_header.source_port;
-                                dst_port = next_header.destination_port;
-                            } else if protocol == 1 || protocol == 58 {  // ICMPまたはICMPv6の場合
-                                // ICMPではポート番号の代わりにType(1バイト目)とCode(2バイト目)を使用
-                                if ethernet_packet.len() >= payload_offset + 2 {
-                                    src_port = ethernet_packet[payload_offset] as u16;     // ICMPタイプ
-                                    dst_port = ethernet_packet[payload_offset + 1] as u16; // ICMPコード
-                                }
-                            }
-                        }
-                    }
                 }
             }
             0x0806 => { // ARP
-                protocol = ARP_PROTOCOL;
                 if ethernet_packet.len() >= 28 {
                     let sender_ip_bytes = &ethernet_packet[28..32];
                     let target_ip_bytes = &ethernet_packet[38..42];
@@ -418,7 +393,6 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                 if let Some(ip_header) = parse_ip_header(&ethernet_packet[14..]) {
                     src_ip = ip_header.src_ip;
                     dst_ip = ip_header.dst_ip;
-                    protocol = ip_header.protocol;
                 }
             }
             0x8100 => { // VLAN
@@ -429,7 +403,7 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                 }
             }
             _ => {
-                protocol = ether_type as u8;
+                return Ok(create_empty_packet_data(ethernet_packet));
             }
         }
 
@@ -440,7 +414,7 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
             dst_ip: InetAddr(dst_ip),
             src_port: src_port as i32,
             dst_port: dst_port as i32,
-            protocol: protocol as i16,
+            protocol: ethernet_packet[23],
             timestamp: Utc::now(),
             data: ethernet_packet[payload_offset..].to_vec(),
             raw_packet: ethernet_packet.to_vec(),
