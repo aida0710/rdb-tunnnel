@@ -7,6 +7,7 @@ use chrono::Utc;
 use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
 use pnet::packet::ip::IpNextHeaderProtocol;
+use postgres_types::FromSql;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -313,67 +314,79 @@ lazy_static! {
 
 pub async fn start_packet_writer() {
     info!("パケットライターを開始します");
-    let mut interval = interval(Duration::from_millis(300));
+    let mut interval_timer = interval(Duration::from_secs(1));  // interval_timerという変数名に変更
+
     loop {
-        interval.tick().await;
-        // 300ミリ秒ごとにバッファをフラッシュ
-        if let Err(e) = flush_packet_buffer().await {
-            error!("パケットバッファのフラッシュに失敗しました: {}", e);
+        interval_timer.tick().await;
+
+        let buffer_size = PACKET_BUFFER.lock().await.len();
+
+        if buffer_size > 0 {
+            let start = std::time::Instant::now();
+            match flush_packet_buffer().await {
+                Ok(_) => {
+                    let duration = start.elapsed();
+                    debug!("フラッシュ完了: 処理時間 {}ms", duration.as_millis());
+
+                    // バッファの蓄積状況に応じて間隔を動的に調整
+                    interval_timer = if buffer_size > 10000 {
+                        interval(Duration::from_millis(500))
+                    } else if buffer_size < 1000 {
+                        interval(Duration::from_secs(1))
+                    } else {
+                        interval_timer
+                    };
+                }
+                Err(e) => {
+                    error!("パケットバッファのフラッシュに失敗しました: {}", e);
+                }
+            }
         }
     }
 }
 
 async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
     let mut buffer = PACKET_BUFFER.lock().await;
-    info!("バッファに{}個のパケットがあります", buffer.len());
-    if buffer.is_empty() {
-        info!("バッファが空の為、データベースへの書き込みをスキップしました");
+    let total_packets = buffer.len();
+    if total_packets == 0 {
         return Ok(());
     }
+    info!("バッファに{}個のパケットがあります", total_packets);
 
-    // firewallの設定
-    let mut firewall = IpFirewall::new(Policy::Blacklist);
-    firewall.add_rule(Filter::Port(13432), 90);
-    firewall.add_rule(Filter::Port(2222), 80);
+    const CHUNK_SIZE: usize = 1000;
 
     let db = Database::get_database();
     let mut client = db.pool.get().await?;
     let transaction = client.transaction().await?;
 
-    const BATCH_SIZE: usize = 5000;
+    let values_placeholders: Vec<String> = (0..CHUNK_SIZE)
+        .map(|i| {
+            format!("(${},${},${},${},${},${},${},${},${},${},${})",
+                    i * 11 + 1, i * 11 + 2, i * 11 + 3, i * 11 + 4, i * 11 + 5,
+                    i * 11 + 6, i * 11 + 7, i * 11 + 8, i * 11 + 9, i * 11 + 10,
+                    i * 11 + 11)
+        })
+        .collect();
 
-    let stmt = transaction.prepare(
-        "
-        INSERT INTO packets (
+    let base_query = format!(
+        "INSERT INTO packets (
             src_mac, dst_mac, ether_type, src_ip, dst_ip, src_port, dst_port,
             ip_protocol, timestamp, data, raw_packet
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        "
-    ).await?;
+        ) VALUES {}",
+        values_placeholders.join(",")
+    );
 
-    // パケットをバッチで処理
     let packets: Vec<PacketData> = buffer.drain(..).collect();
-    let total_packets = packets.len();
     let mut processed = 0;
-    let mut batch_count = 0;
+    let start_time = std::time::Instant::now();
 
-    for chunk in packets.chunks(BATCH_SIZE) {
-        let mut successful_packets = 0;
+    // パケット処理を試行
+    let result = async {
+        for chunk in packets.chunks(CHUNK_SIZE) {
+            let mut params: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(chunk.len() * 11);
 
-        for packet in chunk {
-            let firewall_packet = FirewallPacket::new(
-                packet.src_ip.0,
-                packet.dst_ip.0,
-                packet.src_port as u16,
-                packet.dst_port as u16,
-                match packet.src_ip.0 {
-                    IpAddr::V4(_) => 4,
-                    IpAddr::V6(_) => 6,
-                },
-            );
-
-            if firewall.check(firewall_packet) {
-                let params: &[&(dyn ToSql + Sync)] = &[
+            for packet in chunk {
+                params.extend_from_slice(&[
                     &packet.src_mac,
                     &packet.dst_mac,
                     &packet.ether_type,
@@ -385,27 +398,50 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
                     &packet.timestamp,
                     &packet.data,
                     &packet.raw_packet,
-                ];
-
-                if let Ok(_) = transaction.execute(&stmt, params).await {
-                    successful_packets += 1;
-                }
+                ]);
             }
+
+            let query = if chunk.len() == CHUNK_SIZE {
+                base_query.clone()
+            } else {
+                let chunk_placeholders: Vec<String> = (0..chunk.len())
+                    .map(|i| {
+                        format!("(${},${},${},${},${},${},${},${},${},${},${})",
+                                i * 11 + 1, i * 11 + 2, i * 11 + 3, i * 11 + 4, i * 11 + 5,
+                                i * 11 + 6, i * 11 + 7, i * 11 + 8, i * 11 + 9, i * 11 + 10,
+                                i * 11 + 11)
+                    })
+                    .collect();
+                format!(
+                    "INSERT INTO packets (
+                        src_mac, dst_mac, ether_type, src_ip, dst_ip, src_port, dst_port,
+                        ip_protocol, timestamp, data, raw_packet
+                    ) VALUES {}",
+                    chunk_placeholders.join(",")
+                )
+            };
+
+            transaction.execute(&query, &params).await?;
+            processed += chunk.len();
+            let elapsed = start_time.elapsed();
+            debug!("進捗: {}/{} パケット処理完了 (経過時間: {:?})",
+                processed, total_packets, elapsed);
         }
+        Ok::<_, tokio_postgres::Error>(())
+    }.await;
 
-        processed += chunk.len();
-        batch_count += 1;
-        info!("バッチ {}: {}個のパケットを処理 ({}/{})",
-            batch_count, successful_packets, processed, total_packets);
-    }
-
-    match transaction.commit().await {
+    match result {
         Ok(_) => {
-            info!("{}個のパケットを{}バッチで挿入しました", processed, batch_count);
+            // 全チャンクの処理が成功したらコミット
+            transaction.commit().await?;
+            let elapsed = start_time.elapsed();
+            info!("{}個のパケットを{}秒で一括挿入しました",
+                processed, elapsed.as_secs_f64());
             Ok(())
         }
         Err(e) => {
-            error!("トランザクションのコミットに失敗しました: {}", e);
+            error!("パケット挿入エラー: {}", e);
+            // エラーが発生した場合はロールバック
             PACKET_BUFFER.lock().await.extend(packets);
             Err(crate::database::error::DbError::Postgres(e))
         }
@@ -457,6 +493,20 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                         // IPv6ヘッダーの次ヘッダフィールドから取得
                         ip_protocol = Protocol::ip(ethernet_packet[20] as i32);
                     }
+                }
+            }
+            0x0806 => { // ARP
+                if ethernet_packet.len() >= 28 {
+                    let sender_ip_bytes = &ethernet_packet[28..32];
+                    let target_ip_bytes = &ethernet_packet[38..42];
+                    src_ip = IpAddr::V4(std::net::Ipv4Addr::new(
+                        sender_ip_bytes[0], sender_ip_bytes[1],
+                        sender_ip_bytes[2], sender_ip_bytes[3],
+                    ));
+                    dst_ip = IpAddr::V4(std::net::Ipv4Addr::new(
+                        target_ip_bytes[0], target_ip_bytes[1],
+                        target_ip_bytes[2], target_ip_bytes[3],
+                    ));
                 }
             }
             0x8100 => { // VLAN
