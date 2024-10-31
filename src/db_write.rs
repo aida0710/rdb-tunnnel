@@ -222,7 +222,6 @@ pub async fn start_packet_writer() {
     }
 }
 
-// バッファをデータベースに書き込む
 async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
     let mut buffer = PACKET_BUFFER.lock().await;
     info!("バッファに{}個のパケットがあります", buffer.len());
@@ -240,58 +239,68 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
     let mut client = db.pool.get().await?;
     let transaction = client.transaction().await?;
 
-    let query = "
+    const BATCH_SIZE: usize = 5000;
+
+    let stmt = transaction.prepare(
+        "
         INSERT INTO packets (
-            src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port,
-            protocol, timestamp, data, raw_packet
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    ";
+            src_mac, dst_mac, ether_type, src_ip, dst_ip, src_port, dst_port,
+            ip_protocol, timestamp, data, raw_packet
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        "
+    ).await?;
+
+    // パケットをバッチで処理
     let packets: Vec<PacketData> = buffer.drain(..).collect();
-    for packet in &packets {
-        // パケットデータからFirewallPacketを作成
-        let firewall_packet = FirewallPacket::new(
-            packet.src_ip.0,
-            packet.dst_ip.0,
-            packet.src_port as u16,
-            packet.dst_port as u16,
-            match packet.src_ip.0 {
-                IpAddr::V4(_) => 4,
-                IpAddr::V6(_) => 6,
-            },
-        );
+    let total_packets = packets.len();
+    let mut processed = 0;
+    let mut batch_count = 0;
 
-        // firewallでチェック
-        if !firewall.check(firewall_packet) {
-            trace!("Firewall: パケットをブロックしました - src_ip: {}, dst_ip: {}, src_port: {}, dst_port: {}",
-                packet.src_ip.0, packet.dst_ip.0, packet.src_port, packet.dst_port);
-            continue;
+    for chunk in packets.chunks(BATCH_SIZE) {
+        let mut successful_packets = 0;
+
+        for packet in chunk {
+            let firewall_packet = FirewallPacket::new(
+                packet.src_ip.0,
+                packet.dst_ip.0,
+                packet.src_port as u16,
+                packet.dst_port as u16,
+                match packet.src_ip.0 {
+                    IpAddr::V4(_) => 4,
+                    IpAddr::V6(_) => 6,
+                },
+            );
+
+            if firewall.check(firewall_packet) {
+                let params: &[&(dyn ToSql + Sync)] = &[
+                    &packet.src_mac,
+                    &packet.dst_mac,
+                    &packet.ether_type,
+                    &packet.src_ip,
+                    &packet.dst_ip,
+                    &packet.src_port,
+                    &packet.dst_port,
+                    &packet.ip_protocol,
+                    &packet.timestamp,
+                    &packet.data,
+                    &packet.raw_packet,
+                ];
+
+                if let Ok(_) = transaction.execute(&stmt, params).await {
+                    successful_packets += 1;
+                }
+            }
         }
 
-        let params: &[&(dyn ToSql + Sync)] = &[
-            &packet.src_mac,
-            &packet.dst_mac,
-            &packet.src_ip,
-            &packet.dst_ip,
-            &packet.src_port,
-            &packet.dst_port,
-            &packet.protocol,
-            &packet.timestamp,
-            &packet.data,
-            &packet.raw_packet,
-        ];
-
-        if let Err(e) = transaction.execute(query, params).await {
-            error!("パケットの挿入に失敗しました: {}", e);
-            transaction.rollback().await?;
-            PACKET_BUFFER.lock().await.extend(packets);
-            return Err(crate::database::error::DbError::Postgres(e));
-        }
-        trace!("パケットを挿入しました: src_ip={}, dst_ip={}, protocol={}", packet.src_ip.0, packet.dst_ip.0, packet.protocol);
+        processed += chunk.len();
+        batch_count += 1;
+        info!("バッチ {}: {}個のパケットを処理 ({}/{})",
+            batch_count, successful_packets, processed, total_packets);
     }
 
     match transaction.commit().await {
         Ok(_) => {
-            info!("{}個のパケットを正常に挿入しました", packets.len());
+            info!("{}個のパケットを{}バッチで挿入しました", processed, batch_count);
             Ok(())
         }
         Err(e) => {
@@ -300,44 +309,6 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
             Err(crate::database::error::DbError::Postgres(e))
         }
     }
-}
-
-// パケットの書き込みエントリーポイント
-pub async fn rdb_tunnel_packet_write(ethernet_packet: &[u8]) -> Result<(), crate::database::error::DbError> {
-    let timestamp = Utc::now();
-
-    // イーサネットヘッダーからMACアドレスを取得（最低14バイトあることは確認）
-    if ethernet_packet.len() < 14 {
-        error!("Invalid ethernet packet length");
-        return Ok(());
-    }
-
-    let src_mac = MacAddr([
-        ethernet_packet[6], ethernet_packet[7], ethernet_packet[8],
-        ethernet_packet[9], ethernet_packet[10], ethernet_packet[11]
-    ]);
-    let dst_mac = MacAddr([
-        ethernet_packet[0], ethernet_packet[1], ethernet_packet[2],
-        ethernet_packet[3], ethernet_packet[4], ethernet_packet[5]
-    ]);
-
-    let packet_data = PacketData {
-        src_mac,
-        dst_mac,
-        src_ip: InetAddr(IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))), // ダミー値
-        dst_ip: InetAddr(IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))), // ダミー値
-        src_port: 0,    // 不要な情報
-        dst_port: 0,    // 不要な情報
-        protocol: 0,    // 不要な情報
-        timestamp,
-        data: Vec::new(), // 不要な情報
-        raw_packet: ethernet_packet.to_vec(),  // 生のパケットデータ
-    };
-
-    // バッファに追加
-    PACKET_BUFFER.lock().await.push(packet_data);
-
-    Ok(())
 }
 
 // イーサネットパケットの解析
