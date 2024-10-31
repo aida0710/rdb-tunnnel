@@ -200,6 +200,9 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
             PACKET_BUFFER.lock().await.extend(packets);
             return Err(crate::database::error::DbError::Postgres(e));
         }
+        if packet.protocol == 1 {
+            info!("ICMPパケットを挿入しました: src_ip={}, dst_ip={}", packet.src_ip.0, packet.dst_ip.0);
+        }
         trace!("パケットを挿入しました: src_ip={}, dst_ip={}, protocol={}", packet.src_ip.0, packet.dst_ip.0, packet.protocol);
     }
 
@@ -263,17 +266,41 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                     dst_ip = ip_header.dst_ip;
                     protocol = ip_header.protocol;
 
-                    if protocol == 6 || protocol == 17 {
+                    if protocol == 6 || protocol == 17 || protocol == 1 || protocol == 58 {
                         payload_offset = 14 + match ip_header.version {
-                            4 => 20,
-                            6 => 40,
+                            4 => {
+                                if protocol == 1 {  // ICMPv4
+                                    // ICMPヘッダは8バイト
+                                    let icmp_header_size = 8;
+                                    20 + icmp_header_size
+                                } else {
+                                    20  // 通常のIPv4ヘッダサイズ
+                                }
+                            },
+                            6 => {
+                                if protocol == 58 {  // ICMPv6
+                                    // ICMPv6ヘッダは8バイト
+                                    let icmpv6_header_size = 8;
+                                    40 + icmpv6_header_size
+                                } else {
+                                    40  // 通常のIPv6ヘッダサイズ
+                                }
+                            },
                             _ => return Ok(create_empty_packet_data(ethernet_packet)),
                         };
 
                         if ethernet_packet.len() > payload_offset {
-                            let next_header = parse_next_ip_header(&ethernet_packet[payload_offset..]);
-                            src_port = next_header.source_port;
-                            dst_port = next_header.destination_port;
+                            if protocol == 6 || protocol == 17 {  // TCPまたはUDPの場合
+                                let next_header = parse_next_ip_header(&ethernet_packet[payload_offset..]);
+                                src_port = next_header.source_port;
+                                dst_port = next_header.destination_port;
+                            } else if protocol == 1 || protocol == 58 {  // ICMPまたはICMPv6の場合
+                                // ICMPではポート番号の代わりにType(1バイト目)とCode(2バイト目)を使用
+                                if ethernet_packet.len() >= payload_offset + 2 {
+                                    src_port = ethernet_packet[payload_offset] as u16;     // ICMPタイプ
+                                    dst_port = ethernet_packet[payload_offset + 1] as u16; // ICMPコード
+                                }
+                            }
                         }
                     }
                 }
