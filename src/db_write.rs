@@ -14,49 +14,9 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use postgres_types::FromSql;
 use tokio::sync::Mutex;
 use tokio::time::interval;
 use tokio_postgres::types::{IsNull, ToSql, Type};
-
-// ARPプロトコル番号の定義
-const ARP_PROTOCOL: u8 = 0x08;
-
-// プロトコル定義
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Protocol {
-    IPv4 = 0x0800,
-    IPv6 = 0x86DD,
-    ARP = 0x0806,
-    VLAN = 0x8100,
-    TCP = 6,
-    UDP = 17,
-    ICMP = 1,
-    ICMPv6 = 58,
-    DHCP = 67,
-    DNS = 53,
-    Unknown = 0,
-}
-
-impl Protocol {
-    fn from_u16(value: u16) -> Self {
-        match value {
-            0x0800 => Protocol::IPv4,
-            0x86DD => Protocol::IPv6,
-            0x0806 => Protocol::ARP,
-            0x8100 => Protocol::VLAN,
-            6 => Protocol::TCP,
-            17 => Protocol::UDP,
-            1 => Protocol::ICMP,
-            58 => Protocol::ICMPv6,
-            67 => Protocol::DHCP,
-            53 => Protocol::DNS,
-            _ => Protocol::Unknown,
-        }
-    }
-}
-
-
 
 #[derive(Debug, Clone)]
 pub struct MacAddr(pub [u8; 6]);
@@ -107,6 +67,147 @@ impl<'a> FromSql<'a> for MacAddr {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Protocol(i32);
+
+// イーサネットプロトコル用の実装
+impl Protocol {
+    // EtherType Constants (IEEE 802.3)
+    pub const fn ethernet(value: i32) -> Self {
+        Protocol(value)
+    }
+
+    // Internet Protocol version 4
+    pub const IP_V4: Protocol = Protocol::ethernet(0x0800);
+
+    // Internet Protocol version 6
+    pub const IP_V6: Protocol = Protocol::ethernet(0x86DD);
+
+    // Address Resolution Protocol
+    pub const ARP: Protocol = Protocol::ethernet(0x0806);
+
+    // Reverse Address Resolution Protocol
+    pub const RARP: Protocol = Protocol::ethernet(0x8035);
+
+    // Internetwork Packet Exchange
+    // Novell社が開発したネットワークプロトコル。現在はほぼ使用されていない
+    pub const IPX: Protocol = Protocol::ethernet(0x8137);
+
+    // Versatile Message Transaction Protocol
+    // 分散システム向けの高性能トランスポートプロトコル
+    pub const VMTP: Protocol = Protocol::ethernet(0x805B);
+
+    // AppleTalk (EtherTalk)
+    // Apple社が開発した独自のネットワークプロトコル。現在は非推奨
+    pub const APPLE_TALK: Protocol = Protocol::ethernet(0x809B);
+
+    // AppleTalk Address Resolution Protocol
+    // AppleTalk用のアドレス解決プロトコル
+    pub const AARP: Protocol = Protocol::ethernet(0x80F3);
+
+    // Virtual LAN
+    // IEEE 802.1Q。仮想LANを実現するためのプロトコル
+    pub const VLAN: Protocol = Protocol::ethernet(0x8100);
+
+    // Simple Network Management Protocol over Ethernet
+    // ネットワーク機器の監視・制御用プロトコルのイーサネット実装
+    pub const SNMP: Protocol = Protocol::ethernet(0x814C);
+
+    // Network Basic Input/Output System - NetBIOS Extended User Interface
+    // Windowsネットワークで使用される通信プロトコル
+    pub const NET_BIOS: Protocol = Protocol::ethernet(0x8137);
+
+    // Xpress Transfer Protocol
+    // 高速データ転送用のプロトコル
+    pub const XTP: Protocol = Protocol::ethernet(0x805B);
+
+    // Multiprotocol Label Switching
+    // 高性能な通信経路制御のためのプロトコル
+    pub const MPLS: Protocol = Protocol::ethernet(0x8847);
+
+    // Multiprotocol Label Switching with upstream-assigned label
+    // MPLSの拡張版。上流で割り当てられたラベルを使用
+    pub const MPLS_MULTI: Protocol = Protocol::ethernet(0x8848);
+
+    // Point-to-Point Protocol over Ethernet Discovery Stage
+    // PPPoEの接続確立フェーズで使用されるプロトコル
+    pub const PPPOE_DISCOVERY: Protocol = Protocol::ethernet(0x8863);
+
+    // Point-to-Point Protocol over Ethernet Session Stage
+    // PPPoEのデータ転送フェーズで使用されるプロトコル
+    pub const PPPOE_SESSION: Protocol = Protocol::ethernet(0x8864);
+
+    // Ethernet Loopback Protocol
+    // イーサネットのループバックテスト用プロトコル
+    pub const LOOPBACK: Protocol = Protocol::ethernet(0x9000);
+}
+
+// IPプロトコル用の実装
+impl Protocol {
+    // IP Protocol Numbers (IANA)
+    pub const fn ip(value: i32) -> Self {
+        Protocol(value)
+    }
+
+    // 頻繁に使用されるIPプロトコル
+    pub const ICMP: Protocol = Protocol::ip(1);
+    pub const TCP: Protocol = Protocol::ip(6);
+    pub const UDP: Protocol = Protocol::ip(17);
+    pub const DNS: Protocol = Protocol::ip(53);
+    pub const ICMP_V6: Protocol = Protocol::ip(58);
+    pub const DHCP: Protocol = Protocol::ip(67);
+}
+
+// その他のユーティリティ実装
+impl Protocol {
+    pub const UNKNOWN: Protocol = Protocol(0);
+
+    pub fn from_u16(value: u16) -> Self {
+        Protocol(value as i32)
+    }
+
+    pub fn from_u8(value: u8) -> Self {
+        Protocol(value as i32)
+    }
+
+    pub fn as_i32(&self) -> i32 {
+        self.0
+    }
+
+    // イーサネットプロトコルかどうかの判定
+    pub fn is_ethernet(&self) -> bool {
+        self.0 >= 0x0800
+    }
+
+    // IPプロトコルかどうかの判定
+    pub fn is_ip(&self) -> bool {
+        self.0 > 0 && self.0 < 0x0800
+    }
+}
+
+// PostgreSQL型変換の実装
+impl ToSql for Protocol {
+    fn to_sql(
+        &self,
+        _ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        self.0.to_sql(_ty, out)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        <i32 as ToSql>::accepts(ty)
+    }
+
+    fn to_sql_checked(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        self.0.to_sql_checked(ty, out)
+    }
+}
+
 // PostgreSQLのinet型のためのラッパー構造体
 #[derive(Debug, Clone)]
 struct InetAddr(IpAddr);
@@ -154,11 +255,12 @@ impl ToSql for InetAddr {
 struct PacketData {
     src_mac: MacAddr,
     dst_mac: MacAddr,
+    ether_type: Protocol,
     src_ip: InetAddr,
     dst_ip: InetAddr,
     src_port: i32,
     dst_port: i32,
-    protocol: u8,
+    ip_protocol: Protocol,   // IPプロトコルを保存
     timestamp: chrono::DateTime<Utc>,
     data: Vec<u8>,
     raw_packet: Vec<u8>,
@@ -209,7 +311,6 @@ lazy_static! {
     static ref PACKET_STATS: PacketStats = PacketStats::new();
 }
 
-// パケットライターのメインループ
 pub async fn start_packet_writer() {
     info!("パケットライターを開始します");
     let mut interval = interval(Duration::from_millis(300));
@@ -332,38 +433,30 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
         let mut src_ip = IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0));
         let mut dst_ip = IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0));
         let mut payload_offset: usize = 14;
-
-        if ethernet_packet.len() < 14 {
-            return Ok(create_empty_packet_data(ethernet_packet));
-        }
+        let mut ip_protocol = Protocol::UNKNOWN;
 
         let ether_type = u16::from_be_bytes([ethernet_packet[12], ethernet_packet[13]]);
+        let ether_type_protocol = Protocol::from_u16(ether_type);
 
         match ether_type {
             0x0800 => { // IPv4
-                if let Some(ip_header) = parse_ip_header(&ethernet_packet[14..]) {
-                    src_ip = ip_header.src_ip;
-                    dst_ip = ip_header.dst_ip;
-                }
-            }
-            0x0806 => { // ARP
-                if ethernet_packet.len() >= 28 {
-                    let sender_ip_bytes = &ethernet_packet[28..32];
-                    let target_ip_bytes = &ethernet_packet[38..42];
-                    src_ip = IpAddr::V4(std::net::Ipv4Addr::new(
-                        sender_ip_bytes[0], sender_ip_bytes[1],
-                        sender_ip_bytes[2], sender_ip_bytes[3],
-                    ));
-                    dst_ip = IpAddr::V4(std::net::Ipv4Addr::new(
-                        target_ip_bytes[0], target_ip_bytes[1],
-                        target_ip_bytes[2], target_ip_bytes[3],
-                    ));
+                if ethernet_packet.len() > 23 {
+                    if let Some(ip_header) = parse_ip_header(&ethernet_packet[14..]) {
+                        src_ip = ip_header.src_ip;
+                        dst_ip = ip_header.dst_ip;
+                        // IPv4ヘッダーのプロトコルフィールドから取得
+                        ip_protocol = Protocol::ip(ethernet_packet[23] as i32);
+                    }
                 }
             }
             0x86DD => { // IPv6
-                if let Some(ip_header) = parse_ip_header(&ethernet_packet[14..]) {
-                    src_ip = ip_header.src_ip;
-                    dst_ip = ip_header.dst_ip;
+                if ethernet_packet.len() > 20 {
+                    if let Some(ip_header) = parse_ip_header(&ethernet_packet[14..]) {
+                        src_ip = ip_header.src_ip;
+                        dst_ip = ip_header.dst_ip;
+                        // IPv6ヘッダーの次ヘッダフィールドから取得
+                        ip_protocol = Protocol::ip(ethernet_packet[20] as i32);
+                    }
                 }
             }
             0x8100 => { // VLAN
@@ -373,6 +466,9 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                     return future.await;
                 }
             }
+            0x8035 | 0x8847 | 0x8848 | 0x8863 | 0x8864 => {
+                ip_protocol = Protocol::UNKNOWN;
+            }
             _ => {
                 return Ok(create_empty_packet_data(ethernet_packet));
             }
@@ -381,11 +477,12 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
         Ok(PacketData {
             src_mac,
             dst_mac,
+            ether_type: ether_type_protocol,
             src_ip: InetAddr(src_ip),
             dst_ip: InetAddr(dst_ip),
             src_port: src_port as i32,
             dst_port: dst_port as i32,
-            protocol: ethernet_packet[23],
+            ip_protocol,
             timestamp: Utc::now(),
             data: ethernet_packet[payload_offset..].to_vec(),
             raw_packet: ethernet_packet.to_vec(),
@@ -396,16 +493,38 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
     inner_parse(ethernet_packet, 0).await
 }
 
+// パケットの書き込みエントリーポイント
+pub async fn rdb_tunnel_packet_write(ethernet_packet: &[u8]) -> Result<(), crate::database::error::DbError> {
+    // イーサネットヘッダーからMACアドレスを取得（最低14バイトあることは確認）
+    if ethernet_packet.len() < 14 {
+        error!("Invalid ethernet packet length");
+        return Ok(());
+    }
+
+    match parse_and_analyze_packet(ethernet_packet).await {
+        Ok(packet_data) => {
+            // バッファに追加
+            PACKET_BUFFER.lock().await.push(packet_data);
+            Ok(())
+        }
+        Err(e) => {
+            error!("パケット解析エラー: {}", e);
+            Err(e)
+        }
+    }
+}
+
 // 空のパケットデータを作成
 fn create_empty_packet_data(raw_packet: &[u8]) -> PacketData {
     PacketData {
         src_mac: MacAddr([0; 6]),
         dst_mac: MacAddr([0; 6]),
+        ether_type: Protocol::UNKNOWN,
         src_ip: InetAddr(IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))),
         dst_ip: InetAddr(IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))),
         src_port: 0,
         dst_port: 0,
-        protocol: 0,
+        ip_protocol: Protocol::UNKNOWN,
         timestamp: Utc::now(),
         data: Vec::new(),
         raw_packet: raw_packet.to_vec(),

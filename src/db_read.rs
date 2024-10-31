@@ -45,11 +45,12 @@ impl From<DbError> for PacketError {
 pub struct PacketInfo {
     pub src_mac: MacAddr,
     pub dst_mac: MacAddr,
+    pub ether_type: i32,
     pub src_ip: IpAddr,
     pub dst_ip: IpAddr,
     pub src_port: Option<i32>,
     pub dst_port: Option<i32>,
-    pub protocol: i16,
+    pub ip_protocol: i32,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub data: Vec<u8>,
     pub raw_packet: Vec<u8>,
@@ -108,8 +109,8 @@ impl PacketPoller {
         let (query, params): (_, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) = if is_first {
             (
                 "
-            SELECT src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port, protocol,
-                timestamp, data, raw_packet
+            SELECT src_mac, dst_mac, ether_type, src_ip, dst_ip, src_port, dst_port, 
+                ip_protocol, timestamp, data, raw_packet
             FROM packets
             WHERE length(raw_packet) <= $1::bigint
                 AND (dst_ip = $2
@@ -126,8 +127,8 @@ impl PacketPoller {
                 Some(ts) => {
                     (
                         "
-                    SELECT src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port, protocol,
-                        timestamp, data, raw_packet
+                    SELECT src_mac, dst_mac, ether_type, src_ip, dst_ip, src_port, dst_port,
+                        ip_protocol, timestamp, data, raw_packet
                     FROM packets
                     WHERE timestamp > $2
                         AND length(raw_packet) <= $1::bigint
@@ -145,8 +146,8 @@ impl PacketPoller {
                     *last_ts = Some(five_seconds_ago);
                     (
                         "
-                    SELECT src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port, protocol,
-                        timestamp, data, raw_packet
+                    SELECT src_mac, dst_mac, ether_type, src_ip, dst_ip, src_port, dst_port,
+                        ip_protocol, timestamp, data, raw_packet
                     FROM packets
                     WHERE length(raw_packet) <= $1::bigint
                         AND (dst_ip = $2
@@ -198,11 +199,12 @@ impl PacketPoller {
             let packet_info = PacketInfo {
                 src_mac,
                 dst_mac,
+                ether_type: row.get("ether_type"),
                 src_ip: row.get("src_ip"),
                 dst_ip: row.get("dst_ip"),
                 src_port: row.get("src_port"),
                 dst_port: row.get("dst_port"),
-                protocol: row.get("protocol"),
+                ip_protocol: row.get("ip_protocol"),
                 timestamp,
                 data: row.get("data"),
                 raw_packet: row.get("raw_packet"),
@@ -219,7 +221,6 @@ impl PacketPoller {
             }
         }
 
-        // 最新のタイムスタンプの更新ロジックは変更なし
         let new_timestamp = latest_timestamp.unwrap_or(current_time);
         *last_ts = Some(new_timestamp);
         info!("タイムスタンプを更新: {}", new_timestamp);
@@ -240,24 +241,11 @@ impl PacketPoller {
                 debug!("{}個のパケットを取得しました", packet_count);
 
                 for packet in packets {
-                    // ICMPパケットの場合は詳細なログを出力
-                    if packet.protocol == 1 {  // ICMP (IPv4)
-                        info!("ICMP packet - src: {}({}), dst: {}({})",
-                            packet.src_mac, packet.src_ip,
-                            packet.dst_mac, packet.dst_ip
-                        );
-                    } else if packet.protocol == 58 {  // ICMPv6
-                        info!("ICMPv6 packet - src: {}({}), dst: {}({})",
-                            packet.src_mac, packet.src_ip,
-                            packet.dst_mac, packet.dst_ip
-                        );
-                    } else {
-                        trace!("パケット送信中: {}: {} {}",
+                    trace!("パケット送信中: {}: {} {}",
                             packet.timestamp,
                             packet.src_ip,
                             packet.dst_ip
                         );
-                    }
 
                     if packet.raw_packet.len() > 1500 {
                         debug!("パケットサイズが大きすぎるためスキップ: {} bytes",
@@ -278,10 +266,8 @@ impl PacketPoller {
 
                     match tx.send_to(&*packet.raw_packet, None) {
                         Some(Ok(_)) => {
+                            trace!("パケット送信完了: {} -> {}", packet.src_ip, packet.dst_ip);
                             self.packets_sent.fetch_add(1, Ordering::SeqCst);
-                            if packet.protocol == 1 || packet.protocol == 58 {
-                                info!("ICMP転送成功");
-                            }
                         }
                         Some(Err(e)) => {
                             error!("パケット送信に失敗しました: {}", e);
