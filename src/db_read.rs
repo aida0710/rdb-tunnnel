@@ -266,7 +266,11 @@ impl PacketPoller {
 
                     match tx.send_to(&*packet.raw_packet, None) {
                         Some(Ok(_)) => {
-                            trace!("パケット送信完了: {} -> {}", packet.src_ip, packet.dst_ip);
+                            trace!("パケット送信完了: ip-prot:{} {} -> {}",
+                                packet.ip_protocol,
+                                packet.src_ip,
+                                packet.dst_ip,
+                            );
                             self.packets_sent.fetch_add(1, Ordering::SeqCst);
                         }
                         Some(Err(e)) => {
