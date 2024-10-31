@@ -1,4 +1,3 @@
-use pnet::packet::ip::IpNextHeaderProtocol;
 use std::net::IpAddr;
 use crate::firewall_packet::FirewallPacket;
 
@@ -22,7 +21,6 @@ pub enum Filter {
     IpAddress(IpAddr),
     Port(u16),
     IpVersion(u8),
-    NextHeaderProtocol(IpNextHeaderProtocol),
     And(Box<Filter>, Box<Filter>),
     Or(Box<Filter>, Box<Filter>),
     Not(Box<Filter>),
@@ -61,7 +59,6 @@ impl IpFirewall {
             Filter::IpAddress(addr) => *addr == firewall_packet.src_ip || *addr == firewall_packet.dst_ip,
             Filter::Port(p) => *p == firewall_packet.src_port || *p == firewall_packet.dst_port,
             Filter::IpVersion(v) => *v == firewall_packet.ip_version,
-            Filter::NextHeaderProtocol(p) => *p == firewall_packet.next_header_protocol,
             Filter::And(f1, f2) => self.matches(f1, firewall_packet) && self.matches(f2, firewall_packet),
             Filter::Or(f1, f2) => self.matches(f1, firewall_packet) || self.matches(f2, firewall_packet),
             Filter::Not(f) => !self.matches(f, firewall_packet),
