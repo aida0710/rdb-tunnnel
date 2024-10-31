@@ -35,6 +35,8 @@ async fn main() -> Result<(), InitProcessError> {
     let timescale_port = dotenv::var("TIMESCALE_DB_PORT").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.parse::<u16>().map_err(|e| InitProcessError::EnvVarParseError(e.to_string()))?;
     let timescale_password = dotenv::var("TIMESCALE_DB_PASSWORD").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
     let timescale_db = dotenv::var("TIMESCALE_DB_DATABASE").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
+    let tun_ip = dotenv::var("TUN_IP").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
+    let tun_mask = dotenv::var("TUN_MASK").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
 
     // データベースへの接続
     Database::connect(&timescale_host, timescale_port, &timescale_user, &timescale_password, &timescale_db)
@@ -47,7 +49,8 @@ async fn main() -> Result<(), InitProcessError> {
     println!("仮想NICの作成に成功しました: {}", interface.name());
 
     // IPアドレスの設定とインターフェースの有効化
-    setup_interface("tun0", "192.168.0.150/24").await?;
+    //setup_interface("tun0", "192.168.0.150/24").await?;
+    setup_interface("tun0", format!("{}/{}", tun_ip, tun_mask).as_str()).await?;
 
     // デバイスの選択
     let interface = select_device()
