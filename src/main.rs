@@ -1,12 +1,11 @@
 use crate::select_device::select_device;
 use dotenv::dotenv;
+use log::error;
 use tokio::task;
 use tun_tap::{Iface, Mode};
 
 mod select_device;
-mod inspector;
 mod database;
-pub mod packet_analysis;
 mod error;
 mod db_read;
 mod packet_header;
@@ -15,6 +14,7 @@ mod firewall;
 mod firewall_packet;
 mod virtual_interface;
 mod setup_logger;
+mod packet_analysis;
 
 use crate::database::database::Database;
 use crate::db_read::inject_packet;
@@ -22,7 +22,6 @@ use crate::db_write::start_packet_writer;
 use crate::error::InitProcessError;
 use crate::setup_logger::setup_logger;
 use crate::virtual_interface::setup_interface;
-use packet_analysis::packet_analysis;
 
 #[tokio::main]
 async fn main() -> Result<(), InitProcessError> {
@@ -44,34 +43,47 @@ async fn main() -> Result<(), InitProcessError> {
         .map_err(|e| InitProcessError::DatabaseConnectionError(e.to_string()))?;
 
     // 仮想NIC(tun0)の作成
-    let interface = Iface::new("tap0", Mode::Tap)
+    let virtual_interface = Iface::new("tap0", Mode::Tap)
         .map_err(|e| InitProcessError::VirtualInterfaceError(e.to_string()))?;
-    println!("仮想NICの作成に成功しました: {}", interface.name());
+    println!("仮想NICの作成に成功しました: {}", virtual_interface.name());
 
     // IPアドレスの設定とインターフェースの有効化
     //setup_interface("tun0", "192.168.0.150/24").await?;
     setup_interface("tap0", format!("{}/{}", tun_ip, tun_mask).as_str()).await?;
 
-    // デバイスの選択
     let interface = select_device()
         .map_err(|e| InitProcessError::DeviceSelectionError(e.to_string()))?;
     println!("デバイスの選択に成功しました: {}", interface.name);
 
-    // 非同期のパケット取得とnicに再注入
     let polling_interface = interface.clone();
-    task::spawn(async move {
-        println!("非同期でポーリングを開始します");
-        inject_packet(polling_interface).await.expect("パケットの再注入に失敗しました");
-    });
-
     let analysis_interface = interface.clone();
-    task::spawn(async move {
-        start_packet_writer().await;
+
+    let polling_handle = task::spawn(async move {
+        println!("非同期でポーリングを開始します");
+        inject_packet(polling_interface).await
     });
 
-    // パケットの解析とデータベースへの保存
-    if let Err(e) = packet_analysis(analysis_interface).await {
-        println!("パケットの解析に失敗しました: {}", InitProcessError::PacketAnalysisError(e.to_string()));
+    let writer_handle = task::spawn(async {
+        println!("非同期でパケットの書き込みを開始します");
+        start_packet_writer().await
+    });
+
+    let analysis_handle = task::spawn(async move {
+        println!("非同期でパケット分析を開始します");
+        if let Err(e) = packet_analysis::packet_analysis(analysis_interface).await {
+            error!("パケット分析でエラーが発生: {:?}", e);
+        }
+    });
+
+    // 全てのタスクを待機
+    tokio::select! {
+        _ = polling_handle => println!("ポーリングタスクが終了しました"),
+        _ = writer_handle => println!("ライタータスクが終了しました"),
+        _ = analysis_handle => println!("分析タスクが終了しました"),
+        _ = tokio::signal::ctrl_c() => {
+            println!("Ctrl+C を受信。終了処理を開始します...");
+            std::process::exit(0);
+        }
     }
 
     Ok(())
