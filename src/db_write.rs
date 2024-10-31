@@ -1,14 +1,20 @@
 use crate::database::database::Database;
+use crate::firewall::{Filter, IpFirewall, Policy};
+use crate::firewall_packet::FirewallPacket;
 use crate::packet_header::{parse_ip_header, parse_next_ip_header};
 use bytes::BytesMut;
 use chrono::Utc;
 use lazy_static::lazy_static;
+use log::{debug, error, info, trace};
+use pnet::packet::ip::IpNextHeaderProtocol;
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use log::{debug, error, info, trace};
+use postgres_types::FromSql;
 use tokio::sync::Mutex;
 use tokio::time::interval;
 use tokio_postgres::types::{IsNull, ToSql, Type};
@@ -47,6 +53,57 @@ impl Protocol {
             53 => Protocol::DNS,
             _ => Protocol::Unknown,
         }
+    }
+}
+
+
+
+#[derive(Debug, Clone)]
+pub struct MacAddr(pub [u8; 6]);
+
+impl fmt::Display for MacAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mac_string = self.0.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(":");
+        write!(f, "{}", mac_string)
+    }
+}
+
+impl ToSql for MacAddr {
+    fn to_sql(
+        &self,
+        _ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        out.extend_from_slice(&self.0);
+        Ok(IsNull::No)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == "macaddr"
+    }
+
+    fn to_sql_checked(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        self.to_sql(ty, out)
+    }
+}
+
+impl<'a> FromSql<'a> for MacAddr {
+    fn from_sql(_ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
+        if raw.len() != 6 {
+            error!("MACアドレスの長さが不正です");
+            return Err("Invalid MAC address length".into());
+        }
+        let mut addr = [0u8; 6];
+        addr.copy_from_slice(raw);
+        Ok(MacAddr(addr))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == "macaddr"
     }
 }
 
@@ -95,6 +152,8 @@ impl ToSql for InetAddr {
 // データベースに保存するパケット情報の構造体
 #[derive(Debug, Clone)]
 struct PacketData {
+    src_mac: MacAddr,
+    dst_mac: MacAddr,
     src_ip: InetAddr,
     dst_ip: InetAddr,
     src_port: i32,
@@ -167,8 +226,14 @@ pub async fn start_packet_writer() {
 async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
     let mut buffer = PACKET_BUFFER.lock().await;
     if buffer.is_empty() {
+        info!("バッファが空の為、データベースへの書き込みをスキップしました");
         return Ok(());
     }
+
+    // firewallの設定
+    let mut firewall = IpFirewall::new(Policy::Blacklist);
+    firewall.add_rule(Filter::Port(13432), 90);
+    firewall.add_rule(Filter::Port(2222), 80);
 
     let db = Database::get_database();
     let mut client = db.pool.get().await?;
@@ -176,14 +241,35 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
 
     let query = "
         INSERT INTO packets (
-            src_ip, dst_ip, src_port, dst_port, protocol,
-            timestamp, data, raw_packet
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port,
+            protocol, timestamp, data, raw_packet
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     ";
-
     let packets: Vec<PacketData> = buffer.drain(..).collect();
     for packet in &packets {
+        // パケットデータからFirewallPacketを作成
+        let firewall_packet = FirewallPacket::new(
+            packet.src_ip.0,
+            packet.dst_ip.0,
+            packet.src_port as u16,
+            packet.dst_port as u16,
+            match packet.src_ip.0 {
+                IpAddr::V4(_) => 4,
+                IpAddr::V6(_) => 6,
+            },
+            IpNextHeaderProtocol::new(packet.protocol as u8),
+        );
+
+        // firewallでチェック
+        if !firewall.check(firewall_packet) {
+            trace!("Firewall: パケットをブロックしました - src_ip: {}, dst_ip: {}, src_port: {}, dst_port: {}",
+                packet.src_ip.0, packet.dst_ip.0, packet.src_port, packet.dst_port);
+            continue;
+        }
+
         let params: &[&(dyn ToSql + Sync)] = &[
+            &packet.src_mac,
+            &packet.dst_mac,
             &packet.src_ip,
             &packet.dst_ip,
             &packet.src_port,
@@ -208,7 +294,7 @@ async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
 
     match transaction.commit().await {
         Ok(_) => {
-            debug!("{}個のパケットを正常に挿入しました", packets.len());
+            info!("{}個のパケットを正常に挿入しました", packets.len());
             Ok(())
         }
         Err(e) => {
@@ -239,12 +325,20 @@ pub async fn rdb_tunnel_packet_write(ethernet_packet: &[u8]) -> Result<(), crate
 }
 
 // イーサネットパケットの解析
-// parse_and_analyze_packetの修正版
 async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, crate::database::error::DbError> {
     async fn inner_parse(ethernet_packet: &[u8], depth: u8) -> Result<PacketData, crate::database::error::DbError> {
-        if depth > 5 {  // 再帰の深さ制限
+        if depth > 5 || ethernet_packet.len() < 14 {
             return Ok(create_empty_packet_data(ethernet_packet));
         }
+
+        let dst_mac = MacAddr([
+            ethernet_packet[0], ethernet_packet[1], ethernet_packet[2],
+            ethernet_packet[3], ethernet_packet[4], ethernet_packet[5]
+        ]);
+        let src_mac = MacAddr([
+            ethernet_packet[6], ethernet_packet[7], ethernet_packet[8],
+            ethernet_packet[9], ethernet_packet[10], ethernet_packet[11]
+        ]);
 
         let mut src_port: u16 = 0;
         let mut dst_port: u16 = 0;
@@ -276,7 +370,7 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                                 } else {
                                     20  // 通常のIPv4ヘッダサイズ
                                 }
-                            },
+                            }
                             6 => {
                                 if protocol == 58 {  // ICMPv6
                                     // ICMPv6ヘッダは8バイト
@@ -285,7 +379,7 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                                 } else {
                                     40  // 通常のIPv6ヘッダサイズ
                                 }
-                            },
+                            }
                             _ => return Ok(create_empty_packet_data(ethernet_packet)),
                         };
 
@@ -340,6 +434,8 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
         }
 
         Ok(PacketData {
+            src_mac,
+            dst_mac,
             src_ip: InetAddr(src_ip),
             dst_ip: InetAddr(dst_ip),
             src_port: src_port as i32,
@@ -358,6 +454,8 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
 // 空のパケットデータを作成
 fn create_empty_packet_data(raw_packet: &[u8]) -> PacketData {
     PacketData {
+        src_mac: MacAddr([0; 6]),
+        dst_mac: MacAddr([0; 6]),
         src_ip: InetAddr(IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))),
         dst_ip: InetAddr(IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))),
         src_port: 0,

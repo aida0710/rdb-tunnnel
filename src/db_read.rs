@@ -1,10 +1,15 @@
 use crate::database::database::Database;
 use crate::database::error::DbError;
 use crate::database::execute_query::ExecuteQuery;
+use crate::db_write::MacAddr;
+use bytes::BytesMut;
 use log::{debug, error, info, trace};
 use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{self, NetworkInterface};
+use postgres_types::{FromSql, IsNull, ToSql, Type};
+use std::error::Error;
 use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +43,8 @@ impl From<DbError> for PacketError {
 
 #[derive(Clone)]
 pub struct PacketInfo {
+    pub src_mac: MacAddr,
+    pub dst_mac: MacAddr,
     pub src_ip: IpAddr,
     pub dst_ip: IpAddr,
     pub src_port: Option<i32>,
@@ -95,18 +102,14 @@ impl PacketPoller {
 
         const MAX_PACKET_SIZE: i64 = 1500;
 
-        // 現在時刻を取得して、タイムスタンプの更新に使用
         let current_time = chrono::Utc::now();
         debug!("現在時刻: {}", current_time);
 
         let (query, params): (_, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) = if is_first {
-            // 初回実行時の処理
-            info!("初回実行、直近のパケットを取得");
             (
                 "
-            SELECT src_ip, dst_ip, src_port, dst_port, protocol,
-                timestamp,
-                data, raw_packet
+            SELECT src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port, protocol,
+                timestamp, data, raw_packet
             FROM packets
             WHERE length(raw_packet) <= $1::bigint
                 AND (dst_ip = $2
@@ -119,16 +122,12 @@ impl PacketPoller {
                 vec![&MAX_PACKET_SIZE, &self.my_ip]
             )
         } else {
-            // 2回目以降の処理
             match &*last_ts {
                 Some(ts) => {
-                    info!("直近のタイムスタンプから取得: {}", ts);
-                    trace!("タイムスタンプを使用したクエリ実行: {}", ts);
                     (
                         "
-                    SELECT src_ip, dst_ip, src_port, dst_port, protocol,
-                        timestamp,
-                        data, raw_packet
+                    SELECT src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port, protocol,
+                        timestamp, data, raw_packet
                     FROM packets
                     WHERE timestamp > $2
                         AND length(raw_packet) <= $1::bigint
@@ -142,14 +141,12 @@ impl PacketPoller {
                     )
                 }
                 None => {
-                    error!("タイムスタンプが不正な状態の為、現在時刻の5秒前から取得しました");
                     let five_seconds_ago = current_time - chrono::Duration::seconds(5);
                     *last_ts = Some(five_seconds_ago);
                     (
                         "
-                    SELECT src_ip, dst_ip, src_port, dst_port, protocol,
-                        timestamp,
-                        data, raw_packet
+                    SELECT src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port, protocol,
+                        timestamp, data, raw_packet
                     FROM packets
                     WHERE length(raw_packet) <= $1::bigint
                         AND (dst_ip = $2
@@ -179,22 +176,28 @@ impl PacketPoller {
             }
         };
 
-        debug!("{}行のデータを取得しました", rows.len());
+        info!("{}行のデータを取得しました", rows.len());
 
         let mut packet_infos: Vec<PacketInfo> = Vec::new();
         let mut latest_timestamp = None;
 
         for row in rows {
             let timestamp: chrono::DateTime<chrono::Utc> = row.get("timestamp");
-            trace!("パケットのタイムスタンプを処理中: {}", timestamp);
+            info!("パケットのタイムスタンプを処理中: {}", timestamp);
 
-            // 最新のタイムスタンプを更新
             if latest_timestamp.is_none() || latest_timestamp.unwrap() < timestamp {
                 latest_timestamp = Some(timestamp);
-                trace!("最新のタイムスタンプを更新: {}", timestamp);
+                info!("最新のタイムスタンプを更新: {}", timestamp);
             }
 
+            let src_mac: MacAddr = row.get("src_mac");
+            let dst_mac: MacAddr = row.get("dst_mac");
+
+            debug!("Received MAC addresses - src: {}, dst: {}", src_mac, dst_mac);
+
             let packet_info = PacketInfo {
+                src_mac,
+                dst_mac,
                 src_ip: row.get("src_ip"),
                 dst_ip: row.get("dst_ip"),
                 src_port: row.get("src_port"),
@@ -206,21 +209,18 @@ impl PacketPoller {
             };
 
             if self.should_process_packet(&packet_info) {
-                trace!("パケットを処理対象に追加: {} -> {}", packet_info.src_ip, packet_info.dst_ip);
+                trace!("パケットを処理対象に追加: {} -> {}, MAC: {} -> {}",
+                    packet_info.src_ip,
+                    packet_info.dst_ip,
+                    packet_info.src_mac,
+                    packet_info.dst_mac
+                );
                 packet_infos.push(packet_info);
             }
         }
 
-        // 最新のタイムスタンプの更新ロジックを修正
-        let new_timestamp = if let Some(ts) = latest_timestamp {
-            // パケットが見つかった場合は、その最新のタイムスタンプを使用
-            ts
-        } else {
-            // パケットが見つからなかった場合は、現在時刻を使用
-            debug!("パケットが見つからなかったため、現在時刻を使用: {}", current_time);
-            current_time
-        };
-
+        // 最新のタイムスタンプの更新ロジックは変更なし
+        let new_timestamp = latest_timestamp.unwrap_or(current_time);
         *last_ts = Some(new_timestamp);
         info!("タイムスタンプを更新: {}", new_timestamp);
         debug!("取得したパケット数: {}", packet_infos.len());
@@ -240,11 +240,25 @@ impl PacketPoller {
                 debug!("{}個のパケットを取得しました", packet_count);
 
                 for packet in packets {
-                    trace!("パケット送信中: {}: {} {}",
-                                packet.timestamp,
-                                packet.src_ip,
-                                packet.dst_ip
-                    );
+                    // ICMPパケットの場合は詳細なログを出力
+                    if packet.protocol == 1 {  // ICMP (IPv4)
+                        info!("ICMP packet - src: {}({}), dst: {}({})",
+                            packet.src_mac, packet.src_ip,
+                            packet.dst_mac, packet.dst_ip
+                        );
+                    } else if packet.protocol == 58 {  // ICMPv6
+                        info!("ICMPv6 packet - src: {}({}), dst: {}({})",
+                            packet.src_mac, packet.src_ip,
+                            packet.dst_mac, packet.dst_ip
+                        );
+                    } else {
+                        trace!("パケット送信中: {}: {} {}",
+                            packet.timestamp,
+                            packet.src_ip,
+                            packet.dst_ip
+                        );
+                    }
+
                     if packet.raw_packet.len() > 1500 {
                         debug!("パケットサイズが大きすぎるためスキップ: {} bytes",
                                     packet.raw_packet.len()
@@ -265,6 +279,9 @@ impl PacketPoller {
                     match tx.send_to(&*packet.raw_packet, None) {
                         Some(Ok(_)) => {
                             self.packets_sent.fetch_add(1, Ordering::SeqCst);
+                            if packet.protocol == 1 || packet.protocol == 58 {
+                                info!("ICMP転送成功");
+                            }
                         }
                         Some(Err(e)) => {
                             error!("パケット送信に失敗しました: {}", e);
@@ -281,7 +298,11 @@ impl PacketPoller {
 
                 let sent = self.packets_sent.load(Ordering::SeqCst);
                 let failed = self.packets_failed.load(Ordering::SeqCst);
-                debug!("パケット処理完了 - 成功: {}, 失敗: {}", sent, failed);
+                info!("パケット処理完了 - 成功: {}, 失敗: {}", sent, failed);
+
+                // パケット送信数をリセット
+                self.packets_sent.store(0, Ordering::SeqCst);
+                self.packets_failed.store(0, Ordering::SeqCst);
 
                 Ok(())
             }
