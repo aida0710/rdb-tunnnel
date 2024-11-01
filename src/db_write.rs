@@ -551,10 +551,42 @@ pub async fn rdb_tunnel_packet_write(ethernet_packet: &[u8]) -> Result<(), crate
         return Ok(());
     }
 
+    let mut firewall = IpFirewall::new(Policy::Blacklist);
+    firewall.add_rule(Filter::IpAddress("160.251.175.134".parse().unwrap()), 100);
+    firewall.add_rule(Filter::Port(13432), 90);
+    firewall.add_rule(Filter::Port(2222), 80);
+
     match parse_and_analyze_packet(ethernet_packet).await {
         Ok(packet_data) => {
-            // バッファに追加
-            PACKET_BUFFER.lock().await.push(packet_data);
+            // ファイアウォールチェックを行う
+            let firewall_packet = FirewallPacket::new(
+                packet_data.src_ip.0,
+                packet_data.dst_ip.0,
+                packet_data.src_port as u16,
+                packet_data.dst_port as u16,
+                match packet_data.src_ip.0 {
+                    IpAddr::V4(_) => 4,
+                    IpAddr::V6(_) => 6,
+                },
+            );
+            trace!("firewall_packet: {}:{} -> {}:{}",
+                packet_data.src_ip.0, packet_data.src_port,
+                packet_data.dst_ip.0, packet_data.dst_port
+            );
+
+            // ファイアウォールチェックをパスした場合のみバッファに追加
+            if firewall.check(firewall_packet) {
+                trace!("許可：firewall_packet: {}:{} -> {}:{}",
+                    packet_data.src_ip.0, packet_data.src_port,
+                    packet_data.dst_ip.0, packet_data.dst_port
+                );
+                PACKET_BUFFER.lock().await.push(packet_data);
+            } else {
+                trace!("不許可：firewall_packet: {}:{} -> {}:{}",
+                    packet_data.src_ip.0, packet_data.src_port,
+                    packet_data.dst_ip.0, packet_data.dst_port
+                );
+            }
             Ok(())
         }
         Err(e) => {
