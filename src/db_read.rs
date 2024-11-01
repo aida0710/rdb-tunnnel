@@ -197,11 +197,11 @@ impl PacketPoller {
 
         for row in rows {
             let timestamp: chrono::DateTime<chrono::Utc> = row.get("timestamp");
-            info!("パケットのタイムスタンプを処理中: {}", timestamp);
+            debug!("パケットのタイムスタンプを処理中: {}", timestamp);
 
             if latest_timestamp.is_none() || latest_timestamp.unwrap() < timestamp {
                 latest_timestamp = Some(timestamp);
-                info!("最新のタイムスタンプを更新: {}", timestamp);
+                debug!("最新のタイムスタンプを更新: {}", timestamp);
             }
 
             let src_mac: MacAddr = row.get("src_mac");
@@ -327,7 +327,7 @@ pub async fn inject_packet(interface: NetworkInterface) -> Result<(), PacketErro
     info!("パケット転送を開始します: {}", my_ip);
 
     let poller = PacketPoller::new(my_ip, interface);
-    let mut interval = interval(Duration::from_secs(1));
+    let mut interval = interval(Duration::from_millis(500));
 
     loop {
         interval.tick().await;
