@@ -145,6 +145,7 @@ async fn main() -> Result<(), InitProcessError> {
                     let state = task_state.lock().await;
                     if !state.polling_active && !state.writer_active && !state.analysis_active {
                         info!("全てのタスクが正常に終了しました");
+                        std::process::exit(0);
                         return Ok(());
                     }
                     drop(state);
