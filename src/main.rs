@@ -53,7 +53,10 @@ async fn main() -> Result<(), InitProcessError> {
     // 環境変数の取得
     let timescale_host = dotenv::var("TIMESCALE_DB_HOST").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
     let timescale_user = dotenv::var("TIMESCALE_DB_USER").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
-    let timescale_port = dotenv::var("TIMESCALE_DB_PORT").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?.parse::<u16>().map_err(|e| InitProcessError::EnvVarParseError(e.to_string()))?;
+    let timescale_port = dotenv::var("TIMESCALE_DB_PORT")
+        .map_err(|e| InitProcessError::EnvVarError(e.to_string()))?
+        .parse::<u16>()
+        .map_err(|e| InitProcessError::EnvVarParseError(e.to_string()))?;
     let timescale_password = dotenv::var("TIMESCALE_DB_PASSWORD").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
     let timescale_db = dotenv::var("TIMESCALE_DB_DATABASE").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
     let tun_ip = dotenv::var("TAP_IP").map_err(|e| InitProcessError::EnvVarError(e.to_string()))?;
@@ -79,7 +82,6 @@ async fn main() -> Result<(), InitProcessError> {
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let task_state = Arc::new(Mutex::new(TaskState::new()));
 
-    // タスクの生成
     let polling_interface = interface.clone();
     let analysis_interface = interface.clone();
 
@@ -121,10 +123,8 @@ async fn main() -> Result<(), InitProcessError> {
         },
     );
 
-    // メインループ
     loop {
         tokio::select! {
-            // タスクの監視
             _ = polling_handle => {
                 error!("ポーリングタスクが予期せず終了しました");
                 break;
@@ -137,12 +137,10 @@ async fn main() -> Result<(), InitProcessError> {
                 error!("分析タスクが予期せず終了しました");
                 break;
             }
-            // Ctrl+C の処理
             _ = tokio::signal::ctrl_c() => {
                 info!("シャットダウン信号を受信しました");
                 let _ = shutdown_tx.send(());
 
-                // 全てのタスクが終了するまで待機
                 for _ in 0..10 {
                     let state = task_state.lock().await;
                     if !state.polling_active && !state.writer_active && !state.analysis_active {
