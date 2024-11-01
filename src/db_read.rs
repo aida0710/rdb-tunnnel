@@ -89,11 +89,24 @@ impl PacketPoller {
         }
     }
 
+    // パケットを処理対象とするかどうかを判定
     fn should_process_packet(&self, packet: &PacketInfo) -> bool {
-        let is_for_me = packet.dst_ip == self.my_ip;
-        let is_broadcast = Self::is_broadcast_ip(&packet.dst_ip);
+        let is_tunnel_traffic = packet.src_ip.to_string().starts_with("192.168.0.") ||
+            packet.dst_ip.to_string().starts_with("192.168.0."); // トンネルトラフィックの場合は処理
 
-        is_for_me || is_broadcast
+        let is_for_me = packet.dst_ip == self.my_ip; // 自分宛のパケットの場合は処理
+        let is_broadcast = Self::is_broadcast_ip(&packet.dst_ip); // ブロードキャストパケットの場合は処理
+
+        trace!(
+            "パケット判定: src={}, dst={}, tunnel={}, for_me={}, broadcast={}",
+            packet.src_ip,
+            packet.dst_ip,
+            is_tunnel_traffic,
+            is_for_me,
+            is_broadcast
+        );
+
+        is_for_me || is_broadcast || is_tunnel_traffic
     }
 
     pub async fn poll_packets(&self) -> Result<Vec<PacketInfo>, PacketError> {
