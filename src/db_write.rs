@@ -480,21 +480,74 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                     if let Some(ip_header) = parse_ip_header(&ethernet_packet[14..]) {
                         src_ip = ip_header.src_ip;
                         dst_ip = ip_header.dst_ip;
-                        // IPv4ヘッダーのプロトコルフィールドから取得
-                        ip_protocol = Protocol::ip(ethernet_packet[23] as i32);
+
+                        // IPv4ヘッダー長を取得 (IHL * 4バイト)
+                        let ihl = (ethernet_packet[14] & 0x0F) as usize * 4;
+                        payload_offset = 14 + ihl;  // イーサネット + IPヘッダー
+
+                        // プロトコル番号を取得
+                        let protocol = ethernet_packet[23];
+                        ip_protocol = Protocol::ip(protocol as i32);
+
+                        // TCP or UDP ポート番号の解析
+                        match protocol {
+                            6 | 17 => { // TCP or UDP
+                                if ethernet_packet.len() >= payload_offset + 4 {
+                                    // ソースポート
+                                    src_port = u16::from_be_bytes([
+                                        ethernet_packet[payload_offset],
+                                        ethernet_packet[payload_offset + 1]
+                                    ]);
+                                    // デスティネーションポート
+                                    dst_port = u16::from_be_bytes([
+                                        ethernet_packet[payload_offset + 2],
+                                        ethernet_packet[payload_offset + 3]
+                                    ]);
+
+                                    // TCPの場合はヘッダー長を更新
+                                    if protocol == 6 && ethernet_packet.len() > payload_offset + 12 {
+                                        let tcp_offset = ((ethernet_packet[payload_offset + 12] >> 4) as usize) * 4;
+                                        payload_offset += tcp_offset;
+                                    } else {
+                                        // UDPヘッダーは8バイト固定
+                                        payload_offset += 8;
+                                    }
+                                }
+                            },
+                            _ => {}  // その他のプロトコル
+                        }
                     }
                 }
-            }
+            },
             0x86DD => { // IPv6
-                if ethernet_packet.len() > 20 {
+                if ethernet_packet.len() > 54 {  // IPv6ヘッダーは40バイト
                     if let Some(ip_header) = parse_ip_header(&ethernet_packet[14..]) {
                         src_ip = ip_header.src_ip;
                         dst_ip = ip_header.dst_ip;
-                        // IPv6ヘッダーの次ヘッダフィールドから取得
-                        ip_protocol = Protocol::ip(ethernet_packet[20] as i32);
+
+                        let next_header = ethernet_packet[20];  // IPv6の次ヘッダーフィールド
+                        ip_protocol = Protocol::ip(next_header as i32);
+                        payload_offset = 54;  // イーサネット(14) + IPv6ヘッダー(40)
+
+                        // TCP or UDP ポート番号の解析
+                        match next_header {
+                            6 | 17 => { // TCP or UDP
+                                if ethernet_packet.len() >= payload_offset + 4 {
+                                    src_port = u16::from_be_bytes([
+                                        ethernet_packet[payload_offset],
+                                        ethernet_packet[payload_offset + 1]
+                                    ]);
+                                    dst_port = u16::from_be_bytes([
+                                        ethernet_packet[payload_offset + 2],
+                                        ethernet_packet[payload_offset + 3]
+                                    ]);
+                                }
+                            },
+                            _ => {}
+                        }
                     }
                 }
-            }
+            },
             0x0806 => { // ARP
                 if ethernet_packet.len() >= 28 {
                     let sender_ip_bytes = &ethernet_packet[28..32];
