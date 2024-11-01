@@ -1,67 +1,79 @@
+use std::collections::HashMap;
 use std::net::IpAddr;
-use crate::firewall_packet::FirewallPacket;
 
-pub struct IpFirewall {
-    rules: Vec<Rule>,
-    policy: Policy,
+#[derive(Debug, Eq, Hash, PartialEq)]
+pub enum Filter {
+    IpAddress(IpAddr),
+    Port(u16),
+    Protocol(u8),
 }
 
-pub struct Rule {
-    filter: Filter,
-    priority: u32,
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Debug)]
 pub enum Policy {
     Whitelist,
     Blacklist,
 }
 
-pub enum Filter {
-    IpAddress(IpAddr),
-    Port(u16),
-    IpVersion(u8),
-    And(Box<Filter>, Box<Filter>),
-    Or(Box<Filter>, Box<Filter>),
-    Not(Box<Filter>),
+#[derive(Debug)]
+pub struct IpFirewall {
+    rules: HashMap<Filter, u8>,
+    policy: Policy,
 }
 
 impl IpFirewall {
-    pub fn new(policy: Policy) -> IpFirewall {
-        IpFirewall {
-            rules: Vec::new(),
+    pub fn new(policy: Policy) -> Self {
+        Self {
+            rules: HashMap::new(),
             policy,
         }
     }
 
-    pub fn add_rule(&mut self, filter: Filter, priority: u32) {
-        let rule = Rule { filter, priority };
-        self.rules.push(rule);
-        // ルールを優先度の降順にソート
-        self.rules.sort_by_key(|rule| std::cmp::Reverse(rule.priority));
+    pub fn add_rule(&mut self, filter: Filter, priority: u8) {
+        self.rules.insert(filter, priority);
     }
 
-    pub fn check(&self, firewall_packet: FirewallPacket) -> bool {
-        let rule_match = self.rules
-            .iter()
-            .any(|rule| self.matches(&rule.filter, firewall_packet));
+    pub fn check(&self, packet: crate::firewall_packet::FirewallPacket) -> bool {
+        let mut block = false;
+        let mut allow = false;
+        let mut max_priority = 0;
 
-        match (rule_match, self.policy) {
-            (true, Policy::Whitelist) => true,   // ルールに一致し、ホワイトリストなら許可
-            (false, Policy::Whitelist) => false, // ルールに一致せず、ホワイトリストなら拒否
-            (true, Policy::Blacklist) => false,  // ルールに一致し、ブラックリストなら拒否
-            (false, Policy::Blacklist) => true,  // ルールに一致せず、ブラックリストなら許可
+        for (filter, priority) in &self.rules {
+            if *priority > max_priority {
+                match filter {
+                    Filter::IpAddress(ip) => {
+                        if packet.src_ip == *ip || packet.dst_ip == *ip {
+                            max_priority = *priority;
+                            match self.policy {
+                                Policy::Whitelist => allow = true,
+                                Policy::Blacklist => block = true,
+                            }
+                        }
+                    }
+                    Filter::Port(port) => {
+                        if packet.src_port == *port || packet.dst_port == *port {
+                            max_priority = *priority;
+                            match self.policy {
+                                Policy::Whitelist => allow = true,
+                                Policy::Blacklist => block = true,
+                            }
+                        }
+                    }
+                    Filter::Protocol(protocol) => {
+                        if packet.ip_version == *protocol {
+                            max_priority = *priority;
+                            match self.policy {
+                                Policy::Whitelist => allow = true,
+                                Policy::Blacklist => block = true,
+                            }
+                        }
+                    }
+                }
+            }
         }
-    }
 
-    fn matches(&self, filter: &Filter, firewall_packet: FirewallPacket) -> bool {
-        match filter {
-            Filter::IpAddress(addr) => *addr == firewall_packet.src_ip || *addr == firewall_packet.dst_ip,
-            Filter::Port(p) => *p == firewall_packet.src_port || *p == firewall_packet.dst_port,
-            Filter::IpVersion(v) => *v == firewall_packet.ip_version,
-            Filter::And(f1, f2) => self.matches(f1, firewall_packet) && self.matches(f2, firewall_packet),
-            Filter::Or(f1, f2) => self.matches(f1, firewall_packet) || self.matches(f2, firewall_packet),
-            Filter::Not(f) => !self.matches(f, firewall_packet),
+        match self.policy {
+            Policy::Whitelist => allow,
+            Policy::Blacklist => !block,
         }
     }
 }
