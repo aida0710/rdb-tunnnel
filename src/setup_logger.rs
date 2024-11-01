@@ -1,5 +1,5 @@
 use env_logger::{Builder, Target};
-use log::{info, LevelFilter};
+use log::LevelFilter;
 use std::fs::File;
 use std::io::Write;
 
