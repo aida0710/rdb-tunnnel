@@ -6,6 +6,8 @@ use bytes::BytesMut;
 use chrono::Utc;
 use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
+use tokio::sync::mpsc;
+use futures::StreamExt;
 use pnet::packet::ip::IpNextHeaderProtocol;
 use postgres_types::FromSql;
 use std::collections::HashMap;
@@ -18,6 +20,7 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
 use tokio::time::interval;
 use tokio_postgres::types::{IsNull, ToSql, Type};
+use crate::database::error::DbError;
 
 #[derive(Debug, Clone)]
 pub struct MacAddr(pub [u8; 6]);
@@ -306,36 +309,38 @@ impl PacketStats {
     }
 }
 
-// グローバル変数の定義
 lazy_static! {
     static ref PACKET_BUFFER: Arc<Mutex<Vec<PacketData>>> = Arc::new(Mutex::new(Vec::new()));
-    static ref PACKET_STATS: PacketStats = PacketStats::new();
+    static ref FIREWALL: IpFirewall = {
+        let mut fw = IpFirewall::new(Policy::Blacklist);
+        fw.add_rule(Filter::IpAddress("160.251.175.134".parse().unwrap()), 100);
+        fw.add_rule(Filter::Port(13432), 90);
+        fw.add_rule(Filter::Port(2222), 80);
+        fw
+    };
 }
 
 pub async fn start_packet_writer() {
     info!("パケットライターを開始します");
-    let mut interval_timer = interval(Duration::from_secs(1));  // interval_timerという変数名に変更
+    let mut interval_timer = interval(Duration::from_millis(100));
 
     loop {
         interval_timer.tick().await;
 
-        let buffer_size = PACKET_BUFFER.lock().await.len();
+        let packets = {
+            let mut buffer = PACKET_BUFFER.lock().await;
+            if buffer.is_empty() {
+                continue;
+            }
+            buffer.drain(..).collect::<Vec<_>>()
+        };
 
-        if buffer_size > 0 {
+        if !packets.is_empty() {
             let start = std::time::Instant::now();
-            match flush_packet_buffer().await {
+            match process_packets(packets).await {
                 Ok(_) => {
                     let duration = start.elapsed();
                     debug!("フラッシュ完了: 処理時間 {}ms", duration.as_millis());
-
-                    // バッファの蓄積状況に応じて間隔を動的に調整
-                    interval_timer = if buffer_size > 10000 {
-                        interval(Duration::from_millis(500))
-                    } else if buffer_size < 1000 {
-                        interval(Duration::from_secs(1))
-                    } else {
-                        interval_timer
-                    };
                 }
                 Err(e) => {
                     error!("パケットバッファのフラッシュに失敗しました: {}", e);
@@ -345,107 +350,59 @@ pub async fn start_packet_writer() {
     }
 }
 
-async fn flush_packet_buffer() -> Result<(), crate::database::error::DbError> {
-    let mut buffer = PACKET_BUFFER.lock().await;
-    let total_packets = buffer.len();
-    if total_packets == 0 {
-        return Ok(());
-    }
-    info!("バッファに{}個のパケットがあります", total_packets);
-
+async fn process_packets(packets: Vec<PacketData>) -> Result<(), crate::database::error::DbError> {
     const CHUNK_SIZE: usize = 1000;
 
     let db = Database::get_database();
     let mut client = db.pool.get().await?;
     let transaction = client.transaction().await?;
 
-    let values_placeholders: Vec<String> = (0..CHUNK_SIZE)
-        .map(|i| {
-            format!("(${},${},${},${},${},${},${},${},${},${},${})",
-                    i * 11 + 1, i * 11 + 2, i * 11 + 3, i * 11 + 4, i * 11 + 5,
-                    i * 11 + 6, i * 11 + 7, i * 11 + 8, i * 11 + 9, i * 11 + 10,
-                    i * 11 + 11)
-        })
-        .collect();
-
-    let base_query = format!(
-        "INSERT INTO packets (
-            src_mac, dst_mac, ether_type, src_ip, dst_ip, src_port, dst_port,
-            ip_protocol, timestamp, data, raw_packet
-        ) VALUES {}",
-        values_placeholders.join(",")
-    );
-
-    let packets: Vec<PacketData> = buffer.drain(..).collect();
     let mut processed = 0;
     let start_time = std::time::Instant::now();
 
-    // パケット処理を試行
-    let result = async {
-        for chunk in packets.chunks(CHUNK_SIZE) {
-            let mut params: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(chunk.len() * 11);
-
-            for packet in chunk {
-                params.extend_from_slice(&[
-                    &packet.src_mac,
-                    &packet.dst_mac,
-                    &packet.ether_type,
-                    &packet.src_ip,
-                    &packet.dst_ip,
-                    &packet.src_port,
-                    &packet.dst_port,
-                    &packet.ip_protocol,
-                    &packet.timestamp,
-                    &packet.data,
-                    &packet.raw_packet,
-                ]);
-            }
-
-            let query = if chunk.len() == CHUNK_SIZE {
-                base_query.clone()
-            } else {
-                let chunk_placeholders: Vec<String> = (0..chunk.len())
-                    .map(|i| {
-                        format!("(${},${},${},${},${},${},${},${},${},${},${})",
-                                i * 11 + 1, i * 11 + 2, i * 11 + 3, i * 11 + 4, i * 11 + 5,
-                                i * 11 + 6, i * 11 + 7, i * 11 + 8, i * 11 + 9, i * 11 + 10,
-                                i * 11 + 11)
-                    })
-                    .collect();
-                format!(
-                    "INSERT INTO packets (
-                        src_mac, dst_mac, ether_type, src_ip, dst_ip, src_port, dst_port,
-                        ip_protocol, timestamp, data, raw_packet
-                    ) VALUES {}",
-                    chunk_placeholders.join(",")
-                )
-            };
-
-            transaction.execute(&query, &params).await?;
-            processed += chunk.len();
-            let elapsed = start_time.elapsed();
-            debug!("進捗: {}/{} パケット処理完了 (経過時間: {:?})",
-                processed, total_packets, elapsed);
+    for chunk in packets.chunks(CHUNK_SIZE) {
+        let mut params: Vec<&(dyn ToSql + Sync)> = Vec::new();
+        for packet in chunk {
+            params.extend_from_slice(&[
+                &packet.src_mac,
+                &packet.dst_mac,
+                &packet.ether_type,
+                &packet.src_ip,
+                &packet.dst_ip,
+                &packet.src_port,
+                &packet.dst_port,
+                &packet.ip_protocol,
+                &packet.timestamp,
+                &packet.data,
+                &packet.raw_packet,
+            ]);
         }
-        Ok::<_, tokio_postgres::Error>(())
-    }.await;
 
-    match result {
-        Ok(_) => {
-            // 全チャンクの処理が成功したらコミット
-            transaction.commit().await?;
-            let elapsed = start_time.elapsed();
-            info!("{}個のパケットを{}秒で一括挿入しました",
-                processed, elapsed.as_secs_f64());
-            Ok(())
-        }
-        Err(e) => {
-            error!("パケット挿入エラー: {}", e);
-            // エラーが発生した場合はロールバック
-            PACKET_BUFFER.lock().await.extend(packets);
-            Err(crate::database::error::DbError::Postgres(e))
-        }
+        let placeholders: Vec<String> = (0..chunk.len())
+            .map(|i| {
+                format!("(${},${},${},${},${},${},${},${},${},${},${})",
+                        i * 11 + 1, i * 11 + 2, i * 11 + 3, i * 11 + 4, i * 11 + 5,
+                        i * 11 + 6, i * 11 + 7, i * 11 + 8, i * 11 + 9, i * 11 + 10,
+                        i * 11 + 11)
+            })
+            .collect();
+
+        let query = format!(
+            "INSERT INTO packets (
+                src_mac, dst_mac, ether_type, src_ip, dst_ip, src_port, dst_port,
+                ip_protocol, timestamp, data, raw_packet
+            ) VALUES {}",
+            placeholders.join(",")
+        );
+
+        transaction.execute(&query, &params).await?;
+        processed += chunk.len();
     }
+
+    transaction.commit().await?;
+    info!("{}個のパケットを{}秒で一括挿入しました",
+        processed, start_time.elapsed().as_secs_f64());
+    Ok(())
 }
 
 // イーサネットパケットの解析
@@ -481,55 +438,47 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                         src_ip = ip_header.src_ip;
                         dst_ip = ip_header.dst_ip;
 
-                        // IPv4ヘッダー長を取得 (IHL * 4バイト)
                         let ihl = (ethernet_packet[14] & 0x0F) as usize * 4;
-                        payload_offset = 14 + ihl;  // イーサネット + IPヘッダー
+                        payload_offset = 14 + ihl;
 
-                        // プロトコル番号を取得
                         let protocol = ethernet_packet[23];
                         ip_protocol = Protocol::ip(protocol as i32);
 
-                        // TCP or UDP ポート番号の解析
                         match protocol {
                             6 | 17 => { // TCP or UDP
                                 if ethernet_packet.len() >= payload_offset + 4 {
-                                    // ソースポート
                                     src_port = u16::from_be_bytes([
                                         ethernet_packet[payload_offset],
                                         ethernet_packet[payload_offset + 1]
                                     ]);
-                                    // デスティネーションポート
                                     dst_port = u16::from_be_bytes([
                                         ethernet_packet[payload_offset + 2],
                                         ethernet_packet[payload_offset + 3]
                                     ]);
 
-                                    // TCPの場合はヘッダー長を更新
                                     if protocol == 6 && ethernet_packet.len() > payload_offset + 12 {
                                         let tcp_offset = ((ethernet_packet[payload_offset + 12] >> 4) as usize) * 4;
                                         payload_offset += tcp_offset;
                                     } else {
-                                        // UDPヘッダーは8バイト固定
                                         payload_offset += 8;
                                     }
                                 }
                             },
-                            _ => {}  // その他のプロトコル
+                            _ => {}
                         }
                     }
                 }
-            },
+            }
             0x86DD => { // IPv6
-                if ethernet_packet.len() > 54 {  // IPv6ヘッダーは40バイト
+                if ethernet_packet.len() > 54 {
                     if let Some(ip_header) = parse_ip_header(&ethernet_packet[14..]) {
                         src_ip = ip_header.src_ip;
                         dst_ip = ip_header.dst_ip;
 
-                        let next_header = ethernet_packet[20];  // IPv6の次ヘッダーフィールド
+                        let next_header = ethernet_packet[20];
                         ip_protocol = Protocol::ip(next_header as i32);
-                        payload_offset = 54;  // イーサネット(14) + IPv6ヘッダー(40)
+                        payload_offset = 54;
 
-                        // TCP or UDP ポート番号の解析
                         match next_header {
                             6 | 17 => { // TCP or UDP
                                 if ethernet_packet.len() >= payload_offset + 4 {
@@ -547,7 +496,7 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                         }
                     }
                 }
-            },
+            }
             0x0806 => { // ARP
                 if ethernet_packet.len() >= 28 {
                     let sender_ip_bytes = &ethernet_packet[28..32];
@@ -561,16 +510,6 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
                         target_ip_bytes[2], target_ip_bytes[3],
                     ));
                 }
-            }
-            0x8100 => { // VLAN
-                if ethernet_packet.len() > 18 {
-                    // VLAN タグをスキップして再帰呼び出し
-                    let future = Box::pin(inner_parse(&ethernet_packet[4..], depth + 1));
-                    return future.await;
-                }
-            }
-            0x8035 | 0x8847 | 0x8848 | 0x8863 | 0x8864 => {
-                ip_protocol = Protocol::UNKNOWN;
             }
             _ => {
                 return Ok(create_empty_packet_data(ethernet_packet));
@@ -592,26 +531,18 @@ async fn parse_and_analyze_packet(ethernet_packet: &[u8]) -> Result<PacketData, 
         })
     }
 
-    // 最初の呼び出し
     inner_parse(ethernet_packet, 0).await
 }
 
 // パケットの書き込みエントリーポイント
 pub async fn rdb_tunnel_packet_write(ethernet_packet: &[u8]) -> Result<(), crate::database::error::DbError> {
-    // イーサネットヘッダーからMACアドレスを取得（最低14バイトあることは確認）
     if ethernet_packet.len() < 14 {
         error!("Invalid ethernet packet length");
         return Ok(());
     }
 
-    let mut firewall = IpFirewall::new(Policy::Blacklist);
-    firewall.add_rule(Filter::IpAddress("160.251.175.134".parse().unwrap()), 100);
-    firewall.add_rule(Filter::Port(13432), 90);
-    firewall.add_rule(Filter::Port(2222), 80);
-
     match parse_and_analyze_packet(ethernet_packet).await {
         Ok(packet_data) => {
-            // ファイアウォールチェックを行う
             let firewall_packet = FirewallPacket::new(
                 packet_data.src_ip.0,
                 packet_data.dst_ip.0,
@@ -622,17 +553,13 @@ pub async fn rdb_tunnel_packet_write(ethernet_packet: &[u8]) -> Result<(), crate
                     IpAddr::V6(_) => 6,
                 },
             );
-            trace!("firewall_packet: {}:{} -> {}:{}",
-                packet_data.src_ip.0, packet_data.src_port,
-                packet_data.dst_ip.0, packet_data.dst_port
-            );
 
-            // ファイアウォールチェックをパスした場合のみバッファに追加
-            if firewall.check(firewall_packet) {
+            if FIREWALL.check(firewall_packet) {
                 trace!("許可：firewall_packet: {}:{} -> {}:{}",
                     packet_data.src_ip.0, packet_data.src_port,
                     packet_data.dst_ip.0, packet_data.dst_port
                 );
+
                 PACKET_BUFFER.lock().await.push(packet_data);
             } else {
                 trace!("不許可：firewall_packet: {}:{} -> {}:{}",
@@ -649,7 +576,6 @@ pub async fn rdb_tunnel_packet_write(ethernet_packet: &[u8]) -> Result<(), crate
     }
 }
 
-// 空のパケットデータを作成
 fn create_empty_packet_data(raw_packet: &[u8]) -> PacketData {
     PacketData {
         src_mac: MacAddr([0; 6]),
